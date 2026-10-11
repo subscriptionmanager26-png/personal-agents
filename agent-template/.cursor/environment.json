@@ -1,0 +1,3 @@
+{
+  "install": "npm init -y >/dev/null 2>&1; npm install playwright@1.55.0 --no-fund --no-audit >/dev/null 2>&1; npx playwright install chromium >/dev/null 2>&1; echo 'Personal agent environment ready (Playwright for vault_fill)'"
+}
