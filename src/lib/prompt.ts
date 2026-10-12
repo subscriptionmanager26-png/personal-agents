@@ -66,6 +66,8 @@ If vault_fill fails with origin_mismatch, stop — do not try to bypass.
 ## Delivery
 Write your answer in the final chat message. For long reports, also write to /opt/cursor/artifacts/ and artifacts/ in the workspace.
 
+When you drive a browser or the desktop, the user cannot watch live. Save a screenshot after each meaningful step to artifacts/screens/NN-short-name.png (01-, 02-, …) and, when you can, a screen recording of the whole flow to artifacts/recording.mp4. Never capture a screen while a password or secret is visible.
+
 ---
 User question:
 ${question}`;

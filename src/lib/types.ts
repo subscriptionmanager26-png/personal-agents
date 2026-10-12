@@ -70,6 +70,8 @@ export type Job = {
   threadContext?: string;
   status: JobStatus;
   cursorAgentId?: string;
+  /** v1 run id for this job; used for the live trace stream and run result. */
+  cursorRunId?: string;
   cursorHttpStatus?: number;
   cursorBody?: unknown;
   reply?: {

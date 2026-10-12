@@ -45,7 +45,7 @@ export async function settleJob(
     const message =
       opts?.message ||
       (job.cursorAgentId
-        ? await fetchFinalAssistantMessage(job.cursorAgentId)
+        ? await fetchFinalAssistantMessage(job.cursorAgentId, job.cursorRunId)
         : "Agent finished with no message.");
 
     const slackTs = await maybePostSlack(job, message);
@@ -101,7 +101,16 @@ export async function pollDispatchedJobs() {
   for (const job of jobs) {
     if (!job.cursorAgentId || job.cursorAgentId.startsWith("mock-")) continue;
     try {
-      const { getAgent } = await import("@/lib/cursor-api");
+      const { getAgent, getRun, TERMINAL_RUN_STATUSES } = await import(
+        "@/lib/cursor-api"
+      );
+      if (job.cursorRunId) {
+        const run = await getRun(job.cursorAgentId, job.cursorRunId);
+        if (TERMINAL_RUN_STATUSES.includes((run.status || "").toUpperCase())) {
+          await settleJob(job.id, job.ownerUserId);
+        }
+        continue;
+      }
       const agent = await getAgent(job.cursorAgentId);
       const status = (agent.status || "").toUpperCase();
       if (

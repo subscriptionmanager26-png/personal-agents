@@ -4,6 +4,7 @@ import { listJobsForUser } from "@/lib/jobs";
 import { getSession } from "@/lib/session";
 import { getUser } from "@/lib/users";
 
+import { AgentActivity } from "./agent-activity";
 import { ChatRefresh } from "./refresh-client";
 
 export const dynamic = "force-dynamic";
@@ -55,30 +56,36 @@ export default async function ChatPage({
             note from memory, or install a skill first.
           </p>
         ) : (
-          timeline.map((job) => (
-            <div key={job.id} className="space-y-2">
-              <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
-                <p className="whitespace-pre-wrap">{job.prompt}</p>
+          timeline.map((job, index) => {
+            const active =
+              job.status === "queued" ||
+              job.status === "dispatched" ||
+              job.status === "delivering";
+            return (
+              <div key={job.id} className="space-y-2">
+                <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
+                  <p className="whitespace-pre-wrap">{job.prompt}</p>
+                </div>
+                {job.cursorAgentId || active ? (
+                  <AgentActivity
+                    jobId={job.id}
+                    active={active}
+                    hasReply={!!job.reply?.message || !!job.error}
+                    defaultOpen={index === timeline.length - 1}
+                  />
+                ) : null}
+                {job.reply?.message ? (
+                  <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-border/70 bg-muted/40 px-3 py-2 text-sm">
+                    <p className="whitespace-pre-wrap">{job.reply.message}</p>
+                  </div>
+                ) : job.error ? (
+                  <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                    {job.error}
+                  </div>
+                ) : null}
               </div>
-              {job.reply?.message ? (
-                <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-border/70 bg-muted/40 px-3 py-2 text-sm">
-                  <p className="whitespace-pre-wrap">{job.reply.message}</p>
-                </div>
-              ) : job.error ? (
-                <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                  {job.error}
-                </div>
-              ) : (
-                <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-border/70 px-3 py-2 text-sm text-muted-foreground">
-                  {job.status === "queued"
-                    ? "Queued…"
-                    : job.status === "dispatched"
-                      ? "Agent working…"
-                      : "Delivering reply…"}
-                </div>
-              )}
-            </div>
-          ))
+            );
+          })
         )}
       </div>
 

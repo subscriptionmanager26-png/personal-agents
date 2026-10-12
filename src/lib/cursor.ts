@@ -1,10 +1,14 @@
 import { getConfig, isMockCursor } from "@/lib/config";
 import {
+  createRun,
   cursorPost,
   extractAgentId,
+  extractRunId,
   getAgent,
   getAgentConversation,
+  getRun,
 } from "@/lib/cursor-api";
+import { MOCK_RUN_MS, mockReplyText, mockRunId } from "@/lib/mock-trace";
 import { ensurePersonalRepo, syncVaultRuntimeFiles } from "@/lib/github";
 import { patchJob } from "@/lib/jobs";
 import { buildPersonalAgentPrompt } from "@/lib/prompt";
@@ -29,6 +33,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     await patchJob(job.id, current.id, {
       status: "dispatched",
       cursorAgentId: mockId,
+      cursorRunId: mockRunId(job.id),
       cursorHttpStatus: 200,
       cursorBody: { mock: true, id: mockId },
       event: {
@@ -36,9 +41,10 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
         detail: "Mock Cursor dispatch (CURSOR_API_KEY unset)",
       },
     });
+    await new Promise((resolve) => setTimeout(resolve, MOCK_RUN_MS));
     const { settleJob } = await import("@/lib/settle");
     await settleJob(job.id, current.id, {
-      message: `Mock personal agent for ${current.displayName || current.email || current.id}.\n\nYou asked: ${job.prompt}\n\n(Configured skills: ${(current.enabledSkillIds || []).join(", ") || "none"}; repo: ${current.agentRepository || "not provisioned"})`,
+      message: mockReplyText(job.prompt),
     });
     return { user: current, agentId: mockId, mock: true };
   }
@@ -70,14 +76,18 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   // Vault MCP needs a fresh agent create so mcpServers.env can carry the job token.
   // Follow-ups cannot attach new MCP secrets.
   if (current.cursorAgentId && !needsVaultSession) {
-    const follow = await cursorPost(
-      `/v0/agents/${current.cursorAgentId}/followup`,
-      { prompt: { text: promptText } },
-    );
+    const run = await createRun(current.cursorAgentId, promptText);
+    const runId = run.ok ? extractRunId(run.body) : undefined;
+    const follow = runId
+      ? run
+      : await cursorPost(`/v0/agents/${current.cursorAgentId}/followup`, {
+          prompt: { text: promptText },
+        });
     if (follow.ok) {
       await patchJob(job.id, current.id, {
         status: "dispatched",
         cursorAgentId: current.cursorAgentId,
+        cursorRunId: runId,
         cursorHttpStatus: follow.status,
         cursorBody: follow.body,
         event: {
@@ -96,6 +106,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   await patchJob(job.id, current.id, {
     status: "dispatched",
     cursorAgentId: created.agentId,
+    cursorRunId: created.runId,
     cursorHttpStatus: created.status,
     cursorBody: created.body,
     event: {
@@ -146,7 +157,12 @@ async function createAgent(
   const v1 = await cursorPost("/v1/agents", v1Body);
   const v1Id = extractAgentId(v1.body);
   if (v1.ok && v1Id) {
-    return { agentId: v1Id, status: v1.status, body: v1.body };
+    return {
+      agentId: v1Id,
+      runId: extractRunId(v1.body),
+      status: v1.status,
+      body: v1.body,
+    };
   }
 
   const v0Body: Record<string, unknown> = {
@@ -167,12 +183,25 @@ async function createAgent(
       `Cursor create failed: ${JSON.stringify(v1.body || result.body).slice(0, 400)}`,
     );
   }
-  return { agentId, status: result.status, body: result.body };
+  return {
+    agentId,
+    runId: undefined as string | undefined,
+    status: result.status,
+    body: result.body,
+  };
 }
 
-export async function fetchFinalAssistantMessage(agentId: string) {
+export async function fetchFinalAssistantMessage(agentId: string, runId?: string) {
   if (agentId.startsWith("mock-")) {
     return "Mock agent completed.";
+  }
+  if (runId) {
+    try {
+      const run = await getRun(agentId, runId);
+      if (run.result?.trim()) return run.result.trim();
+    } catch {
+      // fall back to the v0 conversation below
+    }
   }
   const conversation = await getAgentConversation(agentId);
   const messages = conversation.messages ?? [];
