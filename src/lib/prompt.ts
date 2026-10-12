@@ -1,7 +1,33 @@
+import { listEarlierConversationJobs } from "@/lib/jobs";
 import { buildMemoryPack } from "@/lib/memory";
 import { getSkillCatalogEntry } from "@/lib/skills";
+import { scrub } from "@/lib/trace";
 import { listVaultLabels } from "@/lib/vault";
 import type { Job, PersonalUser } from "@/lib/types";
+
+const RECALL_PROMPT_CHARS = 600;
+const RECALL_REPLY_CHARS = 1500;
+const RECALL_TOTAL_CHARS = 6000;
+
+function clip(text: string, max: number) {
+  const t = text.trim();
+  return t.length > max ? `${t.slice(0, max)}… [truncated]` : t;
+}
+
+/** Recent turns of this conversation, oldest first, within a fixed character budget. */
+export async function buildRecentConversation(job: Job) {
+  const earlier = await listEarlierConversationJobs(job);
+  const turns: string[] = [];
+  let used = 0;
+  for (const j of earlier) {
+    const turn = `User: ${clip(j.prompt, RECALL_PROMPT_CHARS)}\nYou: ${clip(j.reply!.message, RECALL_REPLY_CHARS)}`;
+    const safe = String(scrub(turn));
+    if (used + safe.length > RECALL_TOTAL_CHARS) break;
+    turns.unshift(safe);
+    used += safe.length;
+  }
+  return turns.length ? turns.join("\n\n") : "";
+}
 
 /**
  * Model-facing prompt (Hermes / OpenInstinct style).
@@ -13,6 +39,7 @@ export async function buildPersonalAgentPrompt(
 ) {
   const memory = await buildMemoryPack(user.id);
   const vaultLabels = await listVaultLabels(user.id);
+  const recent = await buildRecentConversation(job);
 
   const skills = (user.enabledSkillIds || [])
     .map((id) => getSkillCatalogEntry(id))
@@ -45,6 +72,9 @@ Job: ${job.id}
 ## Memory
 ${memory}
 
+## Recent conversation
+${recent ? `Earlier messages in this chat, oldest first (context only; the user's new question is at the end):\n${recent}` : "(this is the first message in this chat)"}
+
 ## Enabled skills
 ${skills.length ? skills.join("\n") : "(none enabled — answer helpfully anyway)"}
 
@@ -67,6 +97,15 @@ If vault_fill fails with origin_mismatch, stop — do not try to bypass.
 Write your answer in the final chat message. For long reports, also write to /opt/cursor/artifacts/ and artifacts/ in the workspace.
 
 When you drive a browser or the desktop, the user cannot watch live. Save a screenshot after each meaningful step to artifacts/screens/NN-short-name.png (01-, 02-, …) and, when you can, a screen recording of the whole flow to artifacts/recording.mp4. Never capture a screen while a password or secret is visible.
+
+## Suggesting memories
+If you learned something durable about the user that would help in future chats (a preference, a standing fact about them, a conclusion they want kept), propose it by ending your final message with one fenced block:
+
+\`\`\`memory
+[{"kind": "preference", "title": "Short title", "content": "One or two sentences."}]
+\`\`\`
+
+kind is one of preference, fact, note, research_summary. At most 3 entries; skip the block when there is nothing new or it is already in Memory above. The user reviews each suggestion before it is used. Never include passwords, codes, account numbers, tokens or anything from the vault.
 
 ---
 User question:

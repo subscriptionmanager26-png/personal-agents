@@ -22,6 +22,11 @@ export function mockReplyText(prompt: string) {
     `The full report is in artifacts/report.md, with screenshots of each step.`,
     ``,
     `(Mock run: CURSOR_API_KEY is not set, so this trace is simulated. You asked: "${prompt.slice(0, 120)}")`,
+    ``,
+    "```memory",
+    `[{"kind": "preference", "title": "Show amounts in lakh", "content": "Report portfolio values in ₹ lakh with Indian digit grouping."},`,
+    ` {"kind": "fact", "title": "Main broker portal", "content": "Holdings live on demo-broker.example.com (vault login)."}]`,
+    "```",
   ].join("\n");
 }
 

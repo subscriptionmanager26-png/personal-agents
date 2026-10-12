@@ -17,7 +17,9 @@ export const dynamic = "force-dynamic";
 export default async function MemoryPage() {
   const session = await getSession();
   if (!session) return null;
-  const memories = await listMemories(session.id);
+  const all = await listMemories(session.id);
+  const suggested = all.filter((m) => m.status === "suggested");
+  const memories = all.filter((m) => m.status !== "suggested");
 
   return (
     <div className="space-y-6">
@@ -28,6 +30,53 @@ export default async function MemoryPage() {
           across users.
         </p>
       </div>
+
+      {suggested.length > 0 && (
+        <Card id="suggested">
+          <CardHeader>
+            <CardTitle>Suggested by your agent</CardTitle>
+            <CardDescription>
+              Your agent proposed these during chats. They are not used until you approve them.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="space-y-3">
+              {suggested.map((m) => (
+                <li
+                  key={m.id}
+                  className="rounded-md border border-dashed border-border px-3 py-2 text-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium">
+                        {m.title}{" "}
+                        <span className="text-xs text-muted-foreground">[{m.kind}]</span>
+                      </p>
+                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
+                        {m.content}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <form action="/app/memory/approve" method="post">
+                        <input type="hidden" name="id" value={m.id} />
+                        <Button size="sm" type="submit">
+                          Approve
+                        </Button>
+                      </form>
+                      <form action="/app/memory/delete" method="post">
+                        <input type="hidden" name="id" value={m.id} />
+                        <Button variant="ghost" size="sm" type="submit">
+                          Dismiss
+                        </Button>
+                      </form>
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

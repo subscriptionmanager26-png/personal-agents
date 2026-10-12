@@ -95,6 +95,28 @@ export async function listJobsForUser(ownerUserId: string, limit = 50) {
     .slice(0, limit);
 }
 
+/** Earlier replied jobs in the same web thread or Slack thread as `job`, newest first. */
+export async function listEarlierConversationJobs(job: Job, limit = 6) {
+  const store = await getStore();
+  return store.jobs
+    .filter(
+      (j) =>
+        j.ownerUserId === job.ownerUserId &&
+        j.id !== job.id &&
+        j.createdAt < job.createdAt &&
+        j.status === "replied" &&
+        !!j.reply?.message &&
+        (job.source === "slack"
+          ? j.source === "slack" &&
+            j.slackChannelId === job.slackChannelId &&
+            j.slackThreadTs === job.slackThreadTs
+          : (j.source ?? "web") === "web" &&
+            (j.webThreadId ?? "main") === (job.webThreadId ?? "main")),
+    )
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, limit);
+}
+
 export async function listAllJobs(limit = 100) {
   const store = await getStore();
   return store.jobs.slice(0, limit);

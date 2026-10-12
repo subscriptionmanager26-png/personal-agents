@@ -36,6 +36,9 @@ export type MemoryEntry = {
   title: string;
   content: string;
   pinned?: boolean;
+  /** "suggested" entries come from the agent and stay out of prompts until the user approves them. */
+  status?: "active" | "suggested";
+  sourceJobId?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -79,6 +82,7 @@ export type Job = {
     receivedAt: string;
     slackMessageTs?: string;
   };
+  suggestedMemoryIds?: string[];
   error?: string;
   events: { at: string; type: string; detail: string }[];
 };

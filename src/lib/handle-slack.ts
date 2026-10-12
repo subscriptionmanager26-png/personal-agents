@@ -113,7 +113,6 @@ export async function handleSlackEnvelope(body: {
     text: `On it — personal agent for ${user.displayName || user.email || user.slackUserId}.`,
   });
 
-  const prior = await findThreadJob(user.id, event.channel, threadTs);
   const job = await createJob({
     ownerUserId: user.id,
     source: "slack",
@@ -123,9 +122,6 @@ export async function handleSlackEnvelope(body: {
     slackUserId: event.user,
     slackMessageTs: event.ts,
     prompt: text,
-    threadContext: prior
-      ? `Prior job ${prior.id} status=${prior.status}`
-      : undefined,
   });
 
   // Keep the serverless invocation alive after the HTTP response (Vercel/Next).

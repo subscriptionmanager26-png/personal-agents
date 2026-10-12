@@ -1,7 +1,7 @@
 import { after } from "next/server";
 
 import { dispatchJob } from "@/lib/cursor";
-import { createJob, findThreadJob, patchJob } from "@/lib/jobs";
+import { createJob, patchJob } from "@/lib/jobs";
 import { ensurePersonalRepo } from "@/lib/github";
 import type { PersonalUser } from "@/lib/types";
 
@@ -22,15 +22,11 @@ export async function enqueueWebChat(input: {
     // dispatch also ensures
   }
 
-  const prior = await findThreadJob(user.id, "web", webThreadId);
   const job = await createJob({
     ownerUserId: user.id,
     source: "web",
     webThreadId,
     prompt: text,
-    threadContext: prior
-      ? `Prior job ${prior.id} status=${prior.status}`
-      : undefined,
   });
 
   after(async () => {

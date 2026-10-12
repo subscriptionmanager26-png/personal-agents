@@ -1,3 +1,6 @@
+import { Sparkles } from "lucide-react";
+import Link from "next/link";
+
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { listJobsForUser } from "@/lib/jobs";
@@ -78,6 +81,16 @@ export default async function ChatPage({
                   <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
                     {job.error}
                   </div>
+                ) : null}
+                {job.suggestedMemoryIds?.length ? (
+                  <Link
+                    href="/app/memory#suggested"
+                    className="mr-auto flex w-fit items-center gap-1.5 rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    <Sparkles className="size-3.5" />
+                    Suggested {job.suggestedMemoryIds.length} new{" "}
+                    {job.suggestedMemoryIds.length === 1 ? "memory" : "memories"} · Review
+                  </Link>
                 ) : null}
                 {job.cursorAgentId ? <FileBrowser jobId={job.id} active={active} /> : null}
               </div>
