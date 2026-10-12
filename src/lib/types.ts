@@ -8,7 +8,76 @@ export type JobStatus =
   | "replied"
   | "error";
 
-export type JobSource = "web" | "slack";
+export type JobSource = "web" | "slack" | "api";
+
+/** Structured content the company's UI renders with its own components. */
+export type UiBlock =
+  | { kind: "markdown"; text: string }
+  | {
+      kind: "table";
+      title?: string;
+      columns: { key: string; label: string; format?: "text" | "number" | "currency" | "percent" }[];
+      rows: Record<string, string | number | null>[];
+    }
+  | {
+      kind: "chart";
+      title?: string;
+      chartType: "line" | "bar" | "area";
+      xKey: string;
+      series: { key: string; label: string }[];
+      data: Record<string, string | number>[];
+    }
+  | {
+      kind: "card";
+      title: string;
+      body?: string;
+      tone?: "info" | "success" | "warning";
+      fields?: { label: string; value: string }[];
+    };
+
+export type OrderSide = "BUY" | "SELL";
+
+export type OrderRequest = {
+  exchange: "NSE" | "BSE";
+  symbol: string;
+  side: OrderSide;
+  quantity: number;
+  orderType: "MARKET" | "LIMIT";
+  /** Required for LIMIT orders. */
+  price?: number;
+  product: "CNC" | "MIS";
+};
+
+export type OrderStatus = "proposed" | "rejected" | "executed" | "failed" | "expired";
+
+export type OrderProposal = {
+  id: string;
+  ownerUserId: string;
+  jobId: string;
+  order: OrderRequest;
+  rationale: string;
+  status: OrderStatus;
+  brokerOrderId?: string;
+  outcomeMessage?: string;
+  createdAt: string;
+  decidedAt?: string;
+};
+
+export type ActionRequired =
+  | { kind: "connection_login"; service: string; url: string; message?: string }
+  | { kind: "order_confirmation"; orderId: string; order: OrderRequest; rationale: string; expiresAt: string };
+
+/** Ordered events for one message; `seq` doubles as the SSE event id. */
+export type StreamEvent = { seq: number; at: string } & (
+  | { type: "status"; label: string }
+  | { type: "block"; block: UiBlock }
+  | { type: "action_required"; action: ActionRequired }
+  | { type: "done" }
+  | { type: "error"; message: string }
+);
+
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+export type StreamEventInput = DistributiveOmit<StreamEvent, "seq" | "at">;
 
 export type UserRole = "owner" | "client";
 export type MembershipStatus = "pending" | "active" | "suspended";
@@ -25,6 +94,8 @@ export type PersonalUser = {
   role?: UserRole;
   /** Clients start pending; only active clients (and owners) can use an agent. */
   membershipStatus?: MembershipStatus;
+  /** The company's own user id, for users created through the API. */
+  externalId?: string;
   /** Optional Slack binding if the user later connects Slack. */
   slackTeamId?: string;
   slackUserId?: string;
@@ -75,8 +146,30 @@ export type Workspace = {
   memoryGuidance: string;
   skills: WorkspaceSkill[];
   suggestedConnections: SuggestedConnection[];
+  /** The company's MCP servers, attached to every user's agent with a signed user token. */
+  companyServers?: CompanyServer[];
+  apiKeys?: ApiKey[];
+  /** Encrypted HS256 secret the company uses to verify per-user tokens. */
+  mcpSigningSecretEnc?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type CompanyServer = {
+  id: string;
+  /** MCP server name shown to the agent. */
+  name: string;
+  url: string;
+  description?: string;
+};
+
+export type ApiKey = {
+  id: string;
+  label: string;
+  /** sha256 of the secret part, hex. */
+  hash: string;
+  createdAt: string;
+  lastUsedAt?: string;
 };
 
 export type McpConnection = {
@@ -149,6 +242,8 @@ export type Job = {
   memoryWrites?: number;
   error?: string;
   events: { at: string; type: string; detail: string }[];
+  /** What the company's UI shows for this message, in order. */
+  stream?: StreamEvent[];
 };
 
 export type SlackThreadRef = {
@@ -193,6 +288,7 @@ export type StoreData = {
   memories: Record<string, MemoryEntry[]>;
   vaultItems: Record<string, VaultItem[]>;
   connections: Record<string, McpConnection[]>;
+  orders: Record<string, OrderProposal[]>;
   jobs: Job[];
   slackThreads: Record<string, SlackThreadRef>;
   slackInstalls: Record<string, SlackWorkspaceInstall>;

@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start --port 43149 --hostname 0.0.0.0",
     "lint": "eslint",
-    "test": "npx tsx --tsconfig tsconfig.json --test src/lib/*.test.ts"
+    "test": "npx tsx --tsconfig tsconfig.json --test src/lib/*.test.ts",
+    "seed:company": "npx tsx --tsconfig tsconfig.json scripts/seed-demo-company.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

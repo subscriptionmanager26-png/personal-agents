@@ -107,7 +107,7 @@ test("memory MCP is scoped to the token's client", async () => {
   const { createMemory, listMemories } = await import("@/lib/memory");
   const { createJob } = await import("@/lib/jobs");
   const { createMemoryToken } = await import("@/lib/run-token");
-  const { handleMemoryRpc } = await import("@/lib/memory-mcp");
+  const { handleAgentRpc } = await import("@/lib/agent-mcp");
   const { setClientStatus } = await import("@/lib/workspaces");
   const { advisor, alice, bob } = await world();
   await setClientStatus(advisor.id, alice.id, "active");
@@ -117,7 +117,7 @@ test("memory MCP is scoped to the token's client", async () => {
   const job = await createJob({ ownerUserId: alice.id, source: "web", prompt: "hello" });
   const token = await createMemoryToken({ ownerUserId: alice.id, jobId: job.id });
   const call = (name: string, args: Record<string, unknown>) =>
-    handleMemoryRpc(token, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
+    handleAgentRpc(token, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } });
   const payload = (res: Awaited<ReturnType<typeof call>>) =>
     JSON.parse((res.json as { result: { content: { text: string }[] } }).result.content[0].text);
 
@@ -135,8 +135,8 @@ test("memory MCP is scoped to the token's client", async () => {
   // Token for one client's job cannot be replayed for another client.
   const bobJob = await createJob({ ownerUserId: bob.id, source: "web", prompt: "hi" });
   const forged = await createMemoryToken({ ownerUserId: alice.id, jobId: bobJob.id });
-  assert.equal((await handleMemoryRpc(forged, { jsonrpc: "2.0", id: 1, method: "ping" })).status, 401);
-  assert.equal((await handleMemoryRpc("not-a-token", { jsonrpc: "2.0", id: 1, method: "ping" })).status, 401);
+  assert.equal((await handleAgentRpc(forged, { jsonrpc: "2.0", id: 1, method: "ping" })).status, 401);
+  assert.equal((await handleAgentRpc("not-a-token", { jsonrpc: "2.0", id: 1, method: "ping" })).status, 401);
 
   // Suspending a client cuts off its agent's memory access.
   await setClientStatus(advisor.id, alice.id, "suspended");

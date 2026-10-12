@@ -22,6 +22,7 @@ const emptyStore = (): StoreData => ({
   memories: {},
   vaultItems: {},
   connections: {},
+  orders: {},
   jobs: [],
   slackThreads: {},
   slackInstalls: {},

@@ -1,8 +1,58 @@
 import { randomId } from "@/lib/crypto";
 import { getStore, updateStore } from "@/lib/store";
-import type { Job, JobSource, JobStatus, SlackThreadRef } from "@/lib/types";
+import type {
+  Job,
+  JobSource,
+  JobStatus,
+  SlackThreadRef,
+  StreamEvent,
+  StreamEventInput,
+} from "@/lib/types";
 
-const MAX_JOBS = 200;
+const MAX_JOBS = 1000;
+const MAX_STREAM_EVENTS = 200;
+
+function isStreamClosed(job: Job) {
+  return (job.stream ?? []).some((e) => e.type === "done" || e.type === "error");
+}
+
+/** Appends to the job's event stream; ignored once the stream has ended. */
+function pushStream(job: Job, events: StreamEventInput[]) {
+  const stream = (job.stream ??= []);
+  const added: StreamEvent[] = [];
+  for (const input of events) {
+    if (isStreamClosed(job)) break;
+    const terminal = input.type === "done" || input.type === "error";
+    if (!terminal && stream.length >= MAX_STREAM_EVENTS - 1) continue;
+    const event = { ...input, seq: stream.length + 1, at: new Date().toISOString() } as StreamEvent;
+    stream.push(event);
+    added.push(event);
+  }
+  return added;
+}
+
+/** Lifecycle events derived from status changes, so every code path emits them. */
+function lifecycleEvents(next: Job, previous: JobStatus): StreamEventInput[] {
+  const status = next.status;
+  if (status === previous) return [];
+  if (status === "dispatched") return [{ type: "status", label: "Working on it" }];
+  if (status === "replied") {
+    const text = next.reply?.message?.trim();
+    return [...(text ? [{ type: "block" as const, block: { kind: "markdown" as const, text } }] : []), { type: "done" }];
+  }
+  if (status === "error") return [{ type: "error", message: next.error || "The agent could not finish." }];
+  return [];
+}
+
+export async function appendStreamEvents(jobId: string, ownerUserId: string, events: StreamEventInput[]) {
+  return updateStore((store) => {
+    const job = store.jobs.find((j) => j.id === jobId && j.ownerUserId === ownerUserId);
+    if (!job) return undefined;
+    const added = pushStream(job, events);
+    job.updatedAt = new Date().toISOString();
+    return added;
+  });
+}
 
 export async function createJob(input: {
   ownerUserId: string;
@@ -19,7 +69,7 @@ export async function createJob(input: {
   const now = new Date().toISOString();
   const source = input.source || (input.slackChannelId ? "slack" : "web");
   const webThreadId =
-    input.webThreadId || (source === "web" ? "main" : undefined);
+    input.webThreadId || (source !== "slack" ? "main" : undefined);
 
   const job: Job = {
     id: randomId("job"),
@@ -37,6 +87,7 @@ export async function createJob(input: {
     threadContext: input.threadContext,
     status: "queued",
     events: [{ at: now, type: "created", detail: "Job created" }],
+    stream: [{ seq: 1, at: now, type: "status", label: "Queued" }],
   };
 
   return updateStore((store) => {
@@ -60,11 +111,11 @@ export async function createJob(input: {
         lastJobId: job.id,
         updatedAt: now,
       };
-    } else if (source === "web" && webThreadId) {
-      const key = threadKey(input.ownerUserId, "web", webThreadId);
+    } else if (source !== "slack" && webThreadId) {
+      const key = threadKey(input.ownerUserId, source, webThreadId);
       store.slackThreads[key] = {
         ownerUserId: input.ownerUserId,
-        channelId: "web",
+        channelId: source,
         threadTs: webThreadId,
         lastJobId: job.id,
         updatedAt: now,
@@ -110,7 +161,7 @@ export async function listEarlierConversationJobs(job: Job, limit = 6) {
           ? j.source === "slack" &&
             j.slackChannelId === job.slackChannelId &&
             j.slackThreadTs === job.slackThreadTs
-          : (j.source ?? "web") === "web" &&
+          : (j.source ?? "web") === (job.source ?? "web") &&
             (j.webThreadId ?? "main") === (job.webThreadId ?? "main")),
     )
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -150,7 +201,9 @@ export async function patchJob(
     );
     if (!job) return undefined;
     const { event, ...rest } = patch;
+    const previous = job.status;
     Object.assign(job, rest, { updatedAt: new Date().toISOString() });
+    pushStream(job, lifecycleEvents(job, previous));
     if (event) {
       job.events.push({
         at: new Date().toISOString(),

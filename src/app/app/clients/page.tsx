@@ -32,11 +32,13 @@ function ClientRow({ client }: { client: PersonalUser }) {
     <li className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/70 px-3 py-2 text-sm">
       <div className="min-w-0">
         <p className="flex items-center gap-2 font-medium">
-          {client.displayName || client.email}
+          {client.displayName || client.email || client.externalId}
+          {client.externalId && <Badge variant="secondary">API</Badge>}
           {status !== "active" && <Badge variant="outline">{status}</Badge>}
         </p>
         <p className="text-xs text-muted-foreground">
-          {client.email} · joined {new Date(client.createdAt).toLocaleDateString()}
+          {client.externalId ? `id ${client.externalId}` : client.email} · joined{" "}
+          {new Date(client.createdAt).toLocaleDateString()}
         </p>
       </div>
       <div className="flex gap-1">
@@ -91,7 +93,8 @@ export default async function ClientsPage() {
       <div>
         <h1 className="font-heading text-3xl tracking-tight">Clients</h1>
         <p className="mt-1 text-muted-foreground">
-          Clients sign up at <code>/join/{workspace.slug}</code>.
+          Users created by your backend through the API are active immediately. People can also sign
+          up at <code>/join/{workspace.slug}</code> and wait for your approval.
         </p>
       </div>
       {!clients.length && <p className="text-sm text-muted-foreground">No signups yet.</p>}

@@ -69,11 +69,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   } else {
     links = isOwner
       ? [
-          { href: "/app/chat", label: "Chat" },
-          { href: "/app/clients", label: "Clients" },
+          { href: "/app/console", label: "Console" },
+          { href: "/app/clients", label: "Users" },
           { href: "/app/skills", label: "Skills" },
-          { href: "/app/workspace", label: "Workspace" },
-          { href: "/app/connections", label: "Connections" },
+          { href: "/app/workspace", label: "Agent settings" },
+          { href: "/app/developers", label: "Developers" },
         ]
       : [
           { href: "/app/chat", label: "Chat" },

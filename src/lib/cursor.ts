@@ -1,3 +1,5 @@
+import { AGENT_MCP_NAME } from "@/lib/agent-mcp";
+import { companyServersForUser } from "@/lib/company";
 import { getConfig, isMockCursor } from "@/lib/config";
 import { mcpServersForUser } from "@/lib/connections";
 import {
@@ -12,13 +14,13 @@ import {
 } from "@/lib/cursor-api";
 import { ensurePersonalRepo, syncWorkspaceSkills } from "@/lib/github";
 import { patchJob } from "@/lib/jobs";
-import { MOCK_RUN_MS, mockReplyText, mockRunId } from "@/lib/mock-trace";
+import { mockRunId } from "@/lib/mock-trace";
 import { buildPersonalAgentPrompt } from "@/lib/prompt";
 import { createMemoryToken } from "@/lib/run-token";
 import { createVaultJobToken, listVaultLabels } from "@/lib/vault";
 import { getUser, updateUser } from "@/lib/users";
 import { canUseAgent, getWorkspace, skillsHash } from "@/lib/workspaces";
-import type { Job, PersonalUser } from "@/lib/types";
+import type { Job, PersonalUser, Workspace } from "@/lib/types";
 
 /** Cursor's backend must be able to reach our memory MCP endpoint. */
 function publicBaseUrl() {
@@ -37,17 +39,19 @@ async function failJob(job: Job, userId: string, detail: string) {
   await patchJob(job.id, userId, { status: "error", error: detail, event: { type: "error", detail } });
 }
 
-async function buildMcpServers(user: PersonalUser, job: Job) {
+async function buildMcpServers(user: PersonalUser, job: Job, workspace: Workspace | undefined) {
   const servers: McpServerDef[] = [];
   const base = publicBaseUrl();
   if (base) {
     servers.push({
-      name: "personal-memory",
+      name: AGENT_MCP_NAME,
       type: "http",
-      url: `${base}/api/mcp/memory`,
+      url: `${base}/api/mcp/agent`,
       headers: { Authorization: `Bearer ${await createMemoryToken({ ownerUserId: user.id, jobId: job.id })}` },
     });
   }
+  const company = await companyServersForUser(workspace, user);
+  servers.push(...company);
   if (base && (await listVaultLabels(user.id)).length) {
     // vault_fill must type into the VM's browser, so this one runs inside the VM.
     servers.push({
@@ -66,7 +70,8 @@ async function buildMcpServers(user: PersonalUser, job: Job) {
   servers.push(...connections);
   return {
     servers,
-    memoryTools: Boolean(base),
+    agentTools: Boolean(base),
+    companyServers: company.map((c) => c.name),
     connections: connections.map((c) => c.name),
   };
 }
@@ -98,9 +103,10 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
       cursorBody: { mock: true, id: mockId },
       event: { type: "dispatch", detail: "Mock Cursor dispatch (CURSOR_API_KEY unset)" },
     });
-    await new Promise((resolve) => setTimeout(resolve, MOCK_RUN_MS));
+    const { runMockAgent } = await import("@/lib/mock-agent");
+    const message = await runMockAgent(current, job, workspace);
     const { settleJob } = await import("@/lib/settle");
-    await settleJob(job.id, current.id, { message: mockReplyText(job.prompt) });
+    await settleJob(job.id, current.id, { message });
     return { user: current, agentId: mockId, mock: true };
   }
 
@@ -118,10 +124,11 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     // fall back to inlining the skills in the prompt
   }
   const hash = skillsHash(workspace);
-  const mcp = await buildMcpServers(current, job);
+  const mcp = await buildMcpServers(current, job, workspace);
   const promptText = await buildPersonalAgentPrompt(current, job, {
-    memoryTools: mcp.memoryTools,
+    agentTools: mcp.agentTools,
     skillsInRepo,
+    companyServers: mcp.companyServers,
     connections: mcp.connections,
   });
 

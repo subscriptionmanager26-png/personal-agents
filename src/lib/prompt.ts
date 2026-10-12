@@ -1,5 +1,6 @@
 import { listEarlierConversationJobs } from "@/lib/jobs";
 import { buildMemoryPack } from "@/lib/memory";
+import { describeOrder, listOrders } from "@/lib/orders";
 import { skillInstallDir } from "@/lib/skills";
 import { scrub } from "@/lib/trace";
 import { listVaultLabels } from "@/lib/vault";
@@ -54,13 +55,35 @@ function skillsSection(workspace: Workspace | undefined, inRepo: boolean) {
 }
 
 export type PromptRuntime = {
-  /** Memory MCP tools are attached to this run. */
-  memoryTools: boolean;
+  /** Our personal-agent MCP (memory + app UI tools) is attached to this run. */
+  agentTools: boolean;
   /** Workspace skills are present as files in the repo (otherwise they are inlined). */
   skillsInRepo: boolean;
+  /** Names of the company's MCP servers attached to this run. */
+  companyServers: string[];
   /** Names of the client's own MCP connections attached to this run. */
   connections: string[];
 };
+
+const NO_TOOLS: PromptRuntime = { agentTools: false, skillsInRepo: false, companyServers: [], connections: [] };
+
+async function recentOrdersSection(ownerUserId: string) {
+  const orders = (await listOrders(ownerUserId, 8)).filter(
+    (o) => Date.now() - Date.parse(o.createdAt) < 7 * 24 * 3600_000,
+  );
+  if (!orders.length) return "(none in the last 7 days)";
+  return orders
+    .map((o) => {
+      const outcome =
+        o.status === "executed"
+          ? `executed${o.brokerOrderId ? ` (broker id ${o.brokerOrderId})` : ""}`
+          : o.status === "proposed"
+            ? "waiting for the client to confirm"
+            : o.status;
+      return `- ${o.createdAt.slice(0, 16).replace("T", " ")} ${describeOrder(o.order)}: ${outcome}${o.outcomeMessage ? ` — ${o.outcomeMessage}` : ""}`;
+    })
+    .join("\n");
+}
 
 /**
  * Model-facing prompt. Never includes raw secrets, vault tokens or MCP header values,
@@ -69,12 +92,13 @@ export type PromptRuntime = {
 export async function buildPersonalAgentPrompt(
   user: PersonalUser,
   job: Job,
-  runtime: PromptRuntime = { memoryTools: false, skillsInRepo: false, connections: [] },
+  runtime: PromptRuntime = NO_TOOLS,
 ) {
   const workspace = await getWorkspace(user.workspaceId);
   const memory = await buildMemoryPack(user.id);
   const vaultLabels = await listVaultLabels(user.id);
   const recent = await buildRecentConversation(job);
+  const orders = await recentOrdersSection(user.id);
   const business = workspace?.name || "this service";
   const clientName = user.displayName || user.email || "this client";
   const isOwner = user.role === "owner";
@@ -89,8 +113,8 @@ export async function buildPersonalAgentPrompt(
         .join("\n")
     : "(no saved logins)";
 
-  const memoryInstructions = runtime.memoryTools
-    ? `You manage this client's long-term memory with the **personal-memory** MCP tools: memory_search, memory_save, memory_update, memory_forget.
+  const memoryInstructions = runtime.agentTools
+    ? `You manage this client's long-term memory with the **personal-agent** MCP tools: memory_search, memory_save, memory_update, memory_forget.
 - Before answering, search memory when earlier context could matter.
 - Before you finish EVERY chat, update memory: save what is new and lasting, merge or correct entries that changed, forget what is stale. You decide the structure, the kinds and the importance (5 = always relevant, 1 = minor). Prefer updating an existing entry over adding a near-duplicate.
 - Also save a short summary of this chat when it contained anything worth recalling later.
@@ -98,6 +122,28 @@ export async function buildPersonalAgentPrompt(
         workspace?.memoryGuidance ? `\n- Guidance from ${business} on what matters most:\n${workspace.memoryGuidance}` : ""
       }`
     : `Memory tools are not available in this run; use the memory above as context.`;
+
+  const serverNotes = new Map((workspace?.companyServers ?? []).map((s) => [s.name, s.description]));
+  const companyTools = runtime.companyServers.length
+    ? runtime.companyServers
+        .map((name) => `- **${name}**${serverNotes.get(name) ? `: ${serverNotes.get(name)}` : ""}`)
+        .join("\n") +
+      `\nThese servers already know who the client is; never ask the client for ids or API keys for them.`
+    : "(none attached to this run)";
+
+  const presentation = runtime.agentTools
+    ? `The client reads your answer in ${business}'s app, which renders rich content. Use the **personal-agent** tools:
+- update_status before each slow step (e.g. "Fetching your holdings", "Running backtest").
+- show_table for holdings, metrics and comparisons; show_chart for time series such as equity curves; show_card for the headline verdict or a warning. Do not repeat the same data as a markdown table.
+- request_login when a service needs the client to log in; then stop and ask them to send a message once done.
+- Finish with a short markdown answer: the conclusion and next steps, referring to what you showed.`
+    : `Write tables and lists in markdown; app UI tools are not available in this run.`;
+
+  const trading = runtime.agentTools
+    ? `- The ONLY way to trade is propose_order. It never places an order: the client confirms in the app and ${business} places it. Even if another tool can place orders, never use it.
+- Propose an order only when the client clearly asked to buy or sell. Use exact quantity and, for limit orders, price. One proposal per instrument per message.
+- After proposing, tell the client to review and confirm it in the app. Never say an order was placed unless it is listed as executed below.`
+    : `- You cannot place or propose orders in this run. If the client wants to trade, explain what you would propose and ask them to try again later.`;
 
   const connectionsList = runtime.connections.length
     ? `The client connected these MCP servers; use their tools when relevant (for example to read portfolio data): ${runtime.connections.join(", ")}.
@@ -127,6 +173,17 @@ ${memoryInstructions}
 
 ## Recent conversation
 ${recent ? `Earlier messages in this chat, oldest first (context only; the new message is at the end):\n${recent}` : "(this is the first message in this chat)"}
+
+## Tools from ${business}
+${companyTools}
+
+## Showing results in the app
+${presentation}
+
+## Trading
+${trading}
+Recent order proposals:
+${orders}
 
 ## Connected accounts
 Saved logins (model-blind: metadata only, secrets never appear here or in tool results):
