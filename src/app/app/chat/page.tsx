@@ -4,7 +4,8 @@ import { listJobsForUser } from "@/lib/jobs";
 import { getSession } from "@/lib/session";
 import { getUser } from "@/lib/users";
 
-import { AgentActivity } from "./agent-activity";
+import { AgentProgress } from "./agent-progress";
+import { FileBrowser } from "./file-browser";
 import { ChatRefresh } from "./refresh-client";
 
 export const dynamic = "force-dynamic";
@@ -56,7 +57,7 @@ export default async function ChatPage({
             note from memory, or install a skill first.
           </p>
         ) : (
-          timeline.map((job, index) => {
+          timeline.map((job) => {
             const active =
               job.status === "queued" ||
               job.status === "dispatched" ||
@@ -66,13 +67,8 @@ export default async function ChatPage({
                 <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
                   <p className="whitespace-pre-wrap">{job.prompt}</p>
                 </div>
-                {job.cursorAgentId || active ? (
-                  <AgentActivity
-                    jobId={job.id}
-                    active={active}
-                    hasReply={!!job.reply?.message || !!job.error}
-                    defaultOpen={index === timeline.length - 1}
-                  />
+                {active && !job.reply?.message && !job.error ? (
+                  <AgentProgress jobId={job.id} startedAt={job.createdAt} />
                 ) : null}
                 {job.reply?.message ? (
                   <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-border/70 bg-muted/40 px-3 py-2 text-sm">
@@ -83,6 +79,7 @@ export default async function ChatPage({
                     {job.error}
                   </div>
                 ) : null}
+                {job.cursorAgentId ? <FileBrowser jobId={job.id} active={active} /> : null}
               </div>
             );
           })

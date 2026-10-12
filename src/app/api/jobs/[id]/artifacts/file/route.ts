@@ -3,8 +3,27 @@ import { NextResponse } from "next/server";
 import { getArtifactDownloadUrl } from "@/lib/cursor-api";
 import { getOwnedJob, isSafeArtifactPath } from "@/lib/job-access";
 import { isMockRunId, mockArtifactContent } from "@/lib/mock-trace";
+import { artifactKind } from "@/lib/trace-types";
 
 export const dynamic = "force-dynamic";
+
+const TEXT_PREVIEW_LIMIT = 200_000;
+
+// Agent-written files are untrusted: never let them render as active content on our origin.
+const UNTRUSTED_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Content-Security-Policy": "sandbox",
+};
+
+function textResponse(body: string) {
+  return new Response(body.slice(0, TEXT_PREVIEW_LIMIT), {
+    headers: {
+      ...UNTRUSTED_HEADERS,
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "private, max-age=300",
+    },
+  });
+}
 
 export async function GET(
   request: Request,
@@ -14,16 +33,26 @@ export async function GET(
   const job = await getOwnedJob(id);
   if (!job) return NextResponse.json({ error: "not_found" }, { status: 404 });
 
-  const path = new URL(request.url).searchParams.get("path") || "";
+  const search = new URL(request.url).searchParams;
+  const path = search.get("path") || "";
   if (!isSafeArtifactPath(path)) {
     return NextResponse.json({ error: "invalid_path" }, { status: 400 });
+  }
+  const asText = search.get("as") === "text";
+  if (asText && artifactKind(path) !== "text") {
+    return NextResponse.json({ error: "not_text" }, { status: 400 });
   }
 
   if (isMockRunId(job.cursorRunId)) {
     const content = mockArtifactContent(path);
     if (!content) return NextResponse.json({ error: "not_found" }, { status: 404 });
+    if (asText) return textResponse(content.body);
     return new Response(content.body, {
-      headers: { "Content-Type": content.type, "Cache-Control": "private, max-age=300" },
+      headers: {
+        ...UNTRUSTED_HEADERS,
+        "Content-Type": content.type,
+        "Cache-Control": "private, max-age=300",
+      },
     });
   }
 
@@ -33,6 +62,11 @@ export async function GET(
 
   try {
     const { url } = await getArtifactDownloadUrl(job.cursorAgentId, path);
+    if (asText) {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) throw new Error(`Artifact fetch failed (${res.status})`);
+      return textResponse(await res.text());
+    }
     return NextResponse.redirect(url, {
       status: 302,
       headers: { "Cache-Control": "private, no-store" },
