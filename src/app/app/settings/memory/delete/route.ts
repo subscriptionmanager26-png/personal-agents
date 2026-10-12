@@ -11,5 +11,5 @@ export async function POST(request: Request) {
   const id = String(form.get("id") || "");
   if (id) await deleteMemory(session.id, id);
 
-  redirect("/app/memory");
+  redirect("/app/settings/memory");
 }

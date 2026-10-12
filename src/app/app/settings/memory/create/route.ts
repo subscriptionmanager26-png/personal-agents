@@ -9,10 +9,10 @@ export async function POST(request: Request) {
   const form = await request.formData();
   const title = String(form.get("title") || "").trim();
   const content = String(form.get("content") || "").trim();
-  if (!title || !content) redirect("/app/memory");
+  if (!title || !content) redirect("/app/settings/memory");
 
   const rejection = memoryRejection(`${title}\n${content}`);
-  if (rejection) redirect(`/app/memory?error=${encodeURIComponent(rejection)}`);
+  if (rejection) redirect(`/app/settings/memory?error=${encodeURIComponent(rejection)}`);
 
   await createMemory({
     ownerUserId: user.id,
@@ -22,5 +22,5 @@ export async function POST(request: Request) {
     importance: Number(form.get("importance") || 4),
     source: "user",
   });
-  redirect("/app/memory");
+  redirect("/app/settings/memory");
 }

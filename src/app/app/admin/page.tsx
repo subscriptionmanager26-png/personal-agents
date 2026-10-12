@@ -1,4 +1,4 @@
-import { redirect } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import {
@@ -17,16 +17,7 @@ import { listUsers } from "@/lib/users";
 export default async function AdminPage() {
   const session = await getSession();
   if (!session) redirect("/");
-  if (!isOperator(session)) {
-    return (
-      <div>
-        <h1 className="font-heading text-3xl">Monitor</h1>
-        <p className="mt-2 text-muted-foreground">
-          Operator access required. Set OPERATOR_EMAILS to restrict this view.
-        </p>
-      </div>
-    );
-  }
+  if (!isOperator(session)) notFound();
 
   const users = await listUsers();
   const jobs = await listAllJobs(40);

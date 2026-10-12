@@ -73,12 +73,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           { href: "/app/clients", label: "Clients" },
           { href: "/app/skills", label: "Skills" },
           { href: "/app/workspace", label: "Workspace" },
-          { href: "/app/memory", label: "Memory" },
           { href: "/app/connections", label: "Connections" },
         ]
       : [
           { href: "/app/chat", label: "Chat" },
-          { href: "/app/memory", label: "Memory" },
           { href: "/app/connections", label: "Connections" },
         ];
   }
@@ -86,7 +84,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="flex min-h-full flex-1 flex-col bg-[linear-gradient(180deg,color-mix(in_oklab,var(--background),var(--chart-2)_5%),var(--background)_240px)]">
-      <AppNav displayName={user.displayName || user.email} workspaceName={workspace?.name} links={links} />
+      <AppNav
+        displayName={user.displayName || user.email}
+        workspaceName={workspace?.name}
+        links={links}
+        showSettings={links.length > 0}
+      />
       <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">{body}</div>
     </div>
   );

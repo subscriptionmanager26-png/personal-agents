@@ -28,7 +28,7 @@ export function MemoryList({ memories, deletable }: { memories: MemoryEntry[]; d
               <p className="mt-2 whitespace-pre-wrap text-muted-foreground">{m.content}</p>
             </div>
             {deletable && (
-              <form action="/app/memory/delete" method="post">
+              <form action="/app/settings/memory/delete" method="post">
                 <input type="hidden" name="id" value={m.id} />
                 <Button variant="ghost" size="sm" type="submit">
                   Delete

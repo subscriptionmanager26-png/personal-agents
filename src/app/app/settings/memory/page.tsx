@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { MemoryList } from "@/components/memory-list";
 import { Button } from "@/components/ui/button";
 import {
@@ -28,7 +30,10 @@ export default async function MemoryPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Memory</h1>
+        <Link href="/app/settings" className="text-sm text-muted-foreground hover:text-foreground">
+          ← Settings
+        </Link>
+        <h1 className="mt-2 font-heading text-3xl tracking-tight">Agent memory</h1>
         <p className="mt-1 text-muted-foreground">
           Your agent keeps these notes itself: after each chat it saves what matters and decides
           how important each note is. The most important notes are loaded into every conversation.
@@ -55,7 +60,7 @@ export default async function MemoryPage({
           <CardDescription>Optional. Never put passwords here; use Connections for logins.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form action="/app/memory/create" method="post" className="space-y-3">
+          <form action="/app/settings/memory/create" method="post" className="space-y-3">
             <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
               <div className="space-y-1.5">
                 <Label htmlFor="title">Title</Label>
