@@ -1,4 +1,5 @@
-export type MemoryKind = "preference" | "fact" | "note" | "research_summary";
+/** Agent-chosen category (e.g. "preference", "goal", "holding", "episode"). */
+export type MemoryKind = string;
 
 export type JobStatus =
   | "queued"
@@ -9,6 +10,9 @@ export type JobStatus =
 
 export type JobSource = "web" | "slack";
 
+export type UserRole = "owner" | "client";
+export type MembershipStatus = "pending" | "active" | "suspended";
+
 export type PersonalUser = {
   /** Canonical tenancy key: `email:{normalizedEmail}` (legacy: `slack:{team}:{user}`). */
   id: string;
@@ -16,17 +20,75 @@ export type PersonalUser = {
   passwordHash?: string;
   displayName?: string;
   avatarUrl?: string;
+  /** Workspace this person belongs to: as its owner, or as one of its clients. */
+  workspaceId?: string;
+  role?: UserRole;
+  /** Clients start pending; only active clients (and owners) can use an agent. */
+  membershipStatus?: MembershipStatus;
   /** Optional Slack binding if the user later connects Slack. */
   slackTeamId?: string;
   slackUserId?: string;
   agentRepository?: string;
   agentRef: string;
   cursorAgentId?: string;
+  /** Skills version the standing Cursor agent was created with. */
+  cursorAgentSkillsHash?: string;
+  /** Skills version last written to the personal repo. */
+  skillsSyncedHash?: string;
+  /** Vault MCP / environment files version last written to the personal repo. */
+  runtimeSyncedHash?: string;
   enabledSkillIds: string[];
   provisionError?: string;
   createdAt: string;
   updatedAt: string;
   lastSeenAt: string;
+};
+
+export type WorkspaceSkill = {
+  id: string;
+  /** Folder name under .cursor/skills/ in each client's repo. */
+  slug: string;
+  name: string;
+  description: string;
+  /** SKILL.md body written by the owner. */
+  content: string;
+  updatedAt: string;
+};
+
+export type SuggestedConnection = {
+  id: string;
+  name: string;
+  url: string;
+  description?: string;
+  /** When set, clients must supply a value for this header (e.g. Authorization). */
+  authHeader?: string;
+};
+
+export type Workspace = {
+  id: string;
+  slug: string;
+  name: string;
+  ownerUserId: string;
+  /** Standing instructions for every client agent (tone, compliance, scope). */
+  instructions: string;
+  /** What agents should prioritise remembering about clients. */
+  memoryGuidance: string;
+  skills: WorkspaceSkill[];
+  suggestedConnections: SuggestedConnection[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type McpConnection = {
+  id: string;
+  ownerUserId: string;
+  /** MCP server name shown to the agent; unique per user. */
+  name: string;
+  url: string;
+  headerName?: string;
+  headerValueEnc?: string;
+  suggestionId?: string;
+  createdAt: string;
 };
 
 export type MemoryEntry = {
@@ -35,9 +97,10 @@ export type MemoryEntry = {
   kind: MemoryKind;
   title: string;
   content: string;
+  /** 1 (trivia) – 5 (critical); the agent decides. */
+  importance: number;
   pinned?: boolean;
-  /** "suggested" entries come from the agent and stay out of prompts until the user approves them. */
-  status?: "active" | "suggested";
+  source?: "agent" | "user" | "auto";
   sourceJobId?: string;
   createdAt: string;
   updatedAt: string;
@@ -82,7 +145,8 @@ export type Job = {
     receivedAt: string;
     slackMessageTs?: string;
   };
-  suggestedMemoryIds?: string[];
+  /** Memory writes the agent made through the memory tools during this job. */
+  memoryWrites?: number;
   error?: string;
   events: { at: string; type: string; detail: string }[];
 };
@@ -107,14 +171,12 @@ export type SlackWorkspaceInstall = {
   uninstalledAt?: string;
 };
 
-export type SkillCatalogEntry = {
+export type SkillTemplate = {
   id: string;
   name: string;
   description: string;
   /** Relative path under skills-catalog/ */
   path: string;
-  /** Path inside the personal agent repo */
-  installPath: string;
 };
 
 export type AuditEvent = {
@@ -127,8 +189,10 @@ export type AuditEvent = {
 
 export type StoreData = {
   users: Record<string, PersonalUser>;
+  workspaces: Record<string, Workspace>;
   memories: Record<string, MemoryEntry[]>;
   vaultItems: Record<string, VaultItem[]>;
+  connections: Record<string, McpConnection[]>;
   jobs: Job[];
   slackThreads: Record<string, SlackThreadRef>;
   slackInstalls: Record<string, SlackWorkspaceInstall>;

@@ -59,7 +59,8 @@ export function isOperator(user: {
 }) {
   const { operatorEmails, operatorSlackIds } = getConfig();
   if (operatorEmails.length === 0 && operatorSlackIds.length === 0) {
-    return true; // open monitor when no allow-list configured
+    // The monitor spans every workspace; without an allow-list it is dev-only.
+    return process.env.NODE_ENV !== "production";
   }
   if (user.email && operatorEmails.includes(user.email.toLowerCase())) {
     return true;

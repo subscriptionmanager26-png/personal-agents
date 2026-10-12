@@ -1,11 +1,7 @@
-import { Sparkles } from "lucide-react";
-import Link from "next/link";
-
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { listJobsForUser } from "@/lib/jobs";
-import { getSession } from "@/lib/session";
-import { getUser } from "@/lib/users";
+import { requireAgentUser } from "@/lib/viewer";
 
 import { AgentProgress } from "./agent-progress";
 import { FileBrowser } from "./file-browser";
@@ -18,10 +14,8 @@ export default async function ChatPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const session = await getSession();
-  if (!session) return null;
-  const user = await getUser(session.id);
-  const jobs = (await listJobsForUser(session.id, 40)).filter(
+  const { user, workspace, isOwner } = await requireAgentUser();
+  const jobs = (await listJobsForUser(user.id, 40)).filter(
     (j) => j.source === "web" || !j.source,
   );
   const params = await searchParams;
@@ -42,11 +36,14 @@ export default async function ChatPage({
       <div>
         <h1 className="font-heading text-3xl tracking-tight">Chat</h1>
         <p className="mt-1 text-muted-foreground">
-          Talk to your personal Cursor agent. Replies show up in this thread.
+          {isOwner
+            ? "Your own agent, with the same skills your clients get. Use it to test your skills."
+            : `Your personal agent from ${workspace?.name}. It remembers past chats and can use the accounts you connect.`}
         </p>
-        {user?.agentRepository && (
-          <p className="mt-2 break-all text-xs text-muted-foreground">
-            Agent repo: {user.agentRepository}
+        {!isOwner && workspace && (
+          <p className="mt-2 text-xs text-muted-foreground">
+            Private to you. No other client&apos;s agent can see this. {workspace.name} can read
+            your chats and memory.
           </p>
         )}
       </div>
@@ -56,8 +53,7 @@ export default async function ChatPage({
       <div className="flex-1 space-y-4 rounded-xl border border-border/70 bg-background/50 p-4">
         {!timeline.length ? (
           <p className="text-sm text-muted-foreground">
-            No messages yet. Ask your agent to research something, summarize a
-            note from memory, or install a skill first.
+            No messages yet. Say hello, or ask your agent what it can help with.
           </p>
         ) : (
           timeline.map((job) => {
@@ -82,16 +78,6 @@ export default async function ChatPage({
                     {job.error}
                   </div>
                 ) : null}
-                {job.suggestedMemoryIds?.length ? (
-                  <Link
-                    href="/app/memory#suggested"
-                    className="mr-auto flex w-fit items-center gap-1.5 rounded-full border border-dashed border-border px-3 py-1 text-xs text-muted-foreground hover:text-foreground"
-                  >
-                    <Sparkles className="size-3.5" />
-                    Suggested {job.suggestedMemoryIds.length} new{" "}
-                    {job.suggestedMemoryIds.length === 1 ? "memory" : "memories"} · Review
-                  </Link>
-                ) : null}
                 {job.cursorAgentId ? <FileBrowser jobId={job.id} active={active} /> : null}
               </div>
             );
@@ -111,7 +97,7 @@ export default async function ChatPage({
           <p className="text-xs text-muted-foreground">
             {pending
               ? "Agent is working — this page refreshes automatically."
-              : "Uses your memory, vault tokens, and installed skills."}
+              : "Your agent uses its memory, your connected accounts and its skills."}
           </p>
           <Button type="submit">Send</Button>
         </div>

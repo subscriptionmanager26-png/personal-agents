@@ -1,3 +1,7 @@
+import { headers } from "next/headers";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -7,128 +11,93 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { isMockCursor } from "@/lib/config";
-import { listJobsForUser } from "@/lib/jobs";
-import { getSession } from "@/lib/session";
-import { activeBackend } from "@/lib/store";
-import { getUser } from "@/lib/users";
+import { requestOrigin } from "@/lib/request-origin";
+import { getViewer } from "@/lib/viewer";
+import { canUseAgent, listClients } from "@/lib/workspaces";
 
-export default async function AgentPage() {
-  const session = await getSession();
-  if (!session) return null;
-  const user = await getUser(session.id);
-  const jobs = await listJobsForUser(session.id, 15);
+export const dynamic = "force-dynamic";
+
+export default async function HomePage() {
+  const viewer = await getViewer();
+  if (!viewer) redirect("/");
+  const { user, workspace, isOwner } = viewer;
+  // Layout renders setup / waiting screens for everyone else.
+  if (!workspace || !canUseAgent(user)) return null;
+  if (!isOwner) redirect("/app/chat");
+
+  const clients = await listClients(user.id, workspace.id);
+  const pending = clients.filter((c) => c.membershipStatus === "pending").length;
+  const active = clients.filter((c) => c.membershipStatus === "active").length;
+  const origin = requestOrigin(new Request("http://local", { headers: await headers() }));
+  const joinUrl = `${origin}/join/${workspace.slug}`;
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">My agent</h1>
+        <h1 className="font-heading text-3xl tracking-tight">{workspace.name}</h1>
         <p className="mt-1 text-muted-foreground">
-          Standing Cursor agent bound to your email identity and personal repo.
+          Each approved client gets a private agent with your skills and instructions.
         </p>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>Identity</CardTitle>
-            <CardDescription>Canonical tenancy key</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <div>
-              <span className="text-muted-foreground">User id</span>
-              <p className="font-mono text-xs break-all">{user?.id}</p>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Email</span>
-              <p>{user?.email || session.email || "—"}</p>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Runtime</CardTitle>
-            <CardDescription>Cursor + GitHub binding</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="secondary">store:{activeBackend()}</Badge>
-              {isMockCursor() ? (
-                <Badge variant="outline">mock Cursor</Badge>
-              ) : (
-                <Badge>Cursor API</Badge>
-              )}
-            </div>
-            <div>
-              <span className="text-muted-foreground">Agent repo</span>
-              <p className="break-all">
-                {user?.agentRepository || "Not provisioned yet"}
-              </p>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Cursor agent</span>
-              <p className="font-mono text-xs break-all">
-                {user?.cursorAgentId || "Created on first chat message"}
-              </p>
-            </div>
-            {user?.provisionError && (
-              <p className="text-destructive">{user.provisionError}</p>
-            )}
-            <div>
-              <span className="text-muted-foreground">Enabled skills</span>
-              <p>
-                {(user?.enabledSkillIds || []).join(", ") || "None installed"}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Recent jobs</CardTitle>
-          <CardDescription>
-            Only your jobs — never another person&apos;s
-          </CardDescription>
+          <CardTitle>Client signup link</CardTitle>
+          <CardDescription>Share this on your site. You approve each signup.</CardDescription>
         </CardHeader>
         <CardContent>
-          {!jobs.length ? (
-            <p className="text-sm text-muted-foreground">
-              No jobs yet. Open Chat and send your first message.
-            </p>
-          ) : (
-            <ul className="space-y-3">
-              {jobs.map((job) => (
-                <li
-                  key={job.id}
-                  className="rounded-md border border-border/70 px-3 py-2 text-sm"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="font-medium">
-                      {job.status}
-                      <span className="ml-2 text-xs font-normal text-muted-foreground">
-                        via {job.source || "web"}
-                      </span>
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {new Date(job.createdAt).toLocaleString()}
-                    </span>
-                  </div>
-                  <p className="mt-1 text-muted-foreground">{job.prompt}</p>
-                  {job.reply?.message && (
-                    <p className="mt-2 whitespace-pre-wrap border-t border-border/60 pt-2">
-                      {job.reply.message.slice(0, 600)}
-                    </p>
-                  )}
-                  {job.error && (
-                    <p className="mt-2 text-destructive">{job.error}</p>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
+          <code className="block break-all rounded-md bg-muted px-3 py-2 text-sm">{joinUrl}</code>
         </CardContent>
       </Card>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        <Link href="/app/clients">
+          <Card className="h-full transition hover:border-foreground/30">
+            <CardHeader>
+              <CardTitle>Clients</CardTitle>
+              <CardDescription>
+                {active} active
+                {pending ? ` · ${pending} waiting for approval` : ""}
+              </CardDescription>
+            </CardHeader>
+            {pending > 0 && (
+              <CardContent>
+                <Badge>Review {pending}</Badge>
+              </CardContent>
+            )}
+          </Card>
+        </Link>
+        <Link href="/app/skills">
+          <Card className="h-full transition hover:border-foreground/30">
+            <CardHeader>
+              <CardTitle>Skills</CardTitle>
+              <CardDescription>
+                {workspace.skills.length
+                  ? `${workspace.skills.length} skill${workspace.skills.length === 1 ? "" : "s"} given to every agent`
+                  : "No skills yet. Add your playbooks."}
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+        <Link href="/app/workspace">
+          <Card className="h-full transition hover:border-foreground/30">
+            <CardHeader>
+              <CardTitle>Agent instructions</CardTitle>
+              <CardDescription>
+                {workspace.instructions ? "Set" : "Not set"} · memory guidance{" "}
+                {workspace.memoryGuidance ? "set" : "not set"} ·{" "}
+                {workspace.suggestedConnections.length} suggested connections
+              </CardDescription>
+            </CardHeader>
+          </Card>
+        </Link>
+      </div>
+
+      {isMockCursor() && (
+        <p className="text-xs text-muted-foreground">
+          Running without a Cursor API key: agent replies are simulated.
+        </p>
+      )}
     </div>
   );
 }

@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
 
 import { getConfig } from "@/lib/config";
-import { readSkillFiles } from "@/lib/skills";
+import { renderSkillFile, skillInstallDir } from "@/lib/skills";
 import { appendAudit, updateUser } from "@/lib/users";
-import type { PersonalUser } from "@/lib/types";
+import { skillsHash } from "@/lib/workspaces";
+import type { PersonalUser, Workspace } from "@/lib/types";
 
 const API = "https://api.github.com";
 
@@ -82,34 +83,45 @@ async function gh<T>(
   return { ok: response.ok, status: response.status, body };
 }
 
-/** Push vault MCP + environment files into an existing personal repo. */
-export async function syncVaultRuntimeFiles(repoUrl: string) {
-  if (!isGithubConfigured()) return;
-  const { owner, repo } = parseRepo(repoUrl);
+const RUNTIME_FILES = [
+  "tools/vault-mcp/server.mjs",
+  ".cursor/environment.json",
+  ".cursor/skills/security/vault-proxy/SKILL.md",
+  "AGENTS.md",
+];
+
+/** Push vault MCP + environment files into an existing personal repo when they changed. */
+export async function syncVaultRuntimeFiles(user: PersonalUser): Promise<PersonalUser> {
+  if (!isGithubConfigured() || !user.agentRepository) return user;
   const { promises: fs } = await import("node:fs");
   const path = await import("node:path");
   const root = path.join(process.cwd(), "agent-template");
-  const files = [
-    "tools/vault-mcp/server.mjs",
-    ".cursor/environment.json",
-    ".cursor/skills/security/vault-proxy/SKILL.md",
-    "AGENTS.md",
-  ];
-  for (const rel of files) {
-    const content = await fs.readFile(path.join(root, rel), "utf8");
-    await putFile(owner, repo, rel, content, `Sync vault runtime: ${rel}`);
+  const files = await Promise.all(
+    RUNTIME_FILES.map(async (rel) => ({ rel, content: await fs.readFile(path.join(root, rel), "utf8") })),
+  );
+  const hash = crypto
+    .createHash("sha256")
+    .update(files.map((f) => `${f.rel}\n${f.content}`).join("\n\u0000\n"))
+    .digest("hex")
+    .slice(0, 16);
+  if (user.runtimeSyncedHash === hash) return user;
+
+  const { owner, repo } = parseRepo(user.agentRepository);
+  for (const file of files) {
+    await putFile(owner, repo, file.rel, file.content, `Sync agent runtime: ${file.rel}`);
   }
+  return (await updateUser(user.id, { runtimeSyncedHash: hash })) ?? user;
 }
 
 /** Ensure the user has a personal agent repository. Uses template when set. */
 export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUser> {
   if (user.agentRepository) {
     try {
-      await syncVaultRuntimeFiles(user.agentRepository);
+      return await syncVaultRuntimeFiles(user);
     } catch {
       // best-effort; agent may still work without latest vault MCP
+      return user;
     }
-    return user;
   }
   if (!isGithubConfigured()) {
     const updated = await updateUser(user.id, {
@@ -282,71 +294,68 @@ async function seedTemplateFiles(repoUrl: string) {
   await walk(root);
 }
 
-export async function installSkillToUserRepo(
-  user: PersonalUser,
-  skillId: string,
-) {
-  let current = user;
-  if (!isGithubConfigured()) {
-    // Local/dev: enable in control plane without writing to GitHub
-    const enabled = Array.from(
-      new Set([...(current.enabledSkillIds || []), skillId]),
-    );
-    const updated = await updateUser(current.id, {
-      enabledSkillIds: enabled,
-      provisionError: undefined,
-    });
-    await appendAudit({
-      ownerUserId: current.id,
-      type: "skill.install",
-      detail: `Enabled ${skillId} locally (GitHub not configured)`,
-    });
-    return updated ?? current;
-  }
-
-  if (!current.agentRepository) {
-    current = await ensurePersonalRepo(current);
-  }
-  if (!current.agentRepository) {
-    throw new Error(current.provisionError || "No agent repository");
-  }
-
-  const { entry, files } = await readSkillFiles(skillId);
-  const { owner, repo } = parseRepo(current.agentRepository);
-  for (const file of files) {
-    const dest = `${entry.installPath}/${file.relativePath}`;
-    const result = await putFile(
-      owner,
-      repo,
-      dest,
-      file.content,
-      `Install skill ${entry.id}: ${file.relativePath}`,
-    );
-    if (!result.ok) {
-      throw new Error(
-        `Failed to write ${dest}: ${JSON.stringify(result.body).slice(0, 200)}`,
-      );
-    }
-  }
-  const enabled = Array.from(
-    new Set([...(current.enabledSkillIds || []), skillId]),
-  );
-  const updated = await updateUser(current.id, { enabledSkillIds: enabled });
-  await appendAudit({
-    ownerUserId: current.id,
-    type: "skill.install",
-    detail: `Installed ${skillId} into ${current.agentRepository}`,
+async function deleteFile(owner: string, repo: string, filePath: string, message: string) {
+  const existing = await gh<{ sha?: string }>(`/repos/${owner}/${repo}/contents/${filePath}`);
+  const sha =
+    existing.ok && existing.body && typeof existing.body === "object"
+      ? (existing.body as { sha?: string }).sha
+      : undefined;
+  if (!sha) return;
+  await gh(`/repos/${owner}/${repo}/contents/${filePath}`, {
+    method: "DELETE",
+    body: JSON.stringify({ message, sha }),
   });
-  return updated ?? current;
 }
 
-export async function uninstallSkillFlag(user: PersonalUser, skillId: string) {
-  const enabled = (user.enabledSkillIds || []).filter((id) => id !== skillId);
-  const updated = await updateUser(user.id, { enabledSkillIds: enabled });
+const SKILL_MANIFEST = ".cursor/skills/workspace/manifest.json";
+
+/**
+ * Writes the workspace's skills into a client's repo and removes ones the owner deleted.
+ * Returns the synced hash, or undefined when nothing was written.
+ */
+export async function syncWorkspaceSkills(user: PersonalUser, workspace: Workspace | undefined) {
+  const hash = skillsHash(workspace);
+  if (!isGithubConfigured() || !user.agentRepository) return undefined;
+  if (user.skillsSyncedHash === hash) return hash;
+
+  const { owner, repo } = parseRepo(user.agentRepository);
+  const skills = workspace?.skills ?? [];
+
+  const manifest = await gh<{ content?: string }>(`/repos/${owner}/${repo}/contents/${SKILL_MANIFEST}`);
+  let previous: string[] = [];
+  if (manifest.ok && manifest.body && typeof manifest.body === "object") {
+    try {
+      const raw = Buffer.from((manifest.body as { content?: string }).content || "", "base64").toString("utf8");
+      previous = (JSON.parse(raw) as { slugs?: string[] }).slugs ?? [];
+    } catch {
+      previous = [];
+    }
+  }
+
+  for (const skill of skills) {
+    const dest = `${skillInstallDir(skill)}/SKILL.md`;
+    const result = await putFile(owner, repo, dest, renderSkillFile(skill), `Sync skill ${skill.slug}`);
+    if (!result.ok) {
+      throw new Error(`Failed to write ${dest}: ${JSON.stringify(result.body).slice(0, 200)}`);
+    }
+  }
+  const current = new Set(skills.map((s) => s.slug));
+  for (const slug of previous.filter((s) => !current.has(s))) {
+    await deleteFile(owner, repo, `${skillInstallDir({ slug })}/SKILL.md`, `Remove skill ${slug}`);
+  }
+  await putFile(
+    owner,
+    repo,
+    SKILL_MANIFEST,
+    JSON.stringify({ slugs: [...current], hash }, null, 2),
+    "Update skill manifest",
+  );
+
+  await updateUser(user.id, { skillsSyncedHash: hash });
   await appendAudit({
     ownerUserId: user.id,
-    type: "skill.uninstall",
-    detail: `Disabled skill ${skillId}`,
+    type: "skills.sync",
+    detail: `Synced ${skills.length} workspace skills (${hash})`,
   });
-  return updated ?? user;
+  return hash;
 }

@@ -23,5 +23,5 @@ export async function POST(request: Request) {
     });
   }
 
-  redirect("/app/vault");
+  redirect("/app/connections");
 }

@@ -1,3 +1,4 @@
+import { MemoryList } from "@/components/memory-list";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -10,152 +11,84 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { listMemories } from "@/lib/memory";
-import { getSession } from "@/lib/session";
+import { requireAgentUser } from "@/lib/viewer";
 
 export const dynamic = "force-dynamic";
 
-export default async function MemoryPage() {
-  const session = await getSession();
-  if (!session) return null;
-  const all = await listMemories(session.id);
-  const suggested = all.filter((m) => m.status === "suggested");
-  const memories = all.filter((m) => m.status !== "suggested");
+export default async function MemoryPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const { user, isOwner, workspace } = await requireAgentUser();
+  const memories = await listMemories(user.id);
+  const params = await searchParams;
+  const error = typeof params.error === "string" ? params.error : "";
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="font-heading text-3xl tracking-tight">Memory</h1>
         <p className="mt-1 text-muted-foreground">
-          Durable notes injected into your personal agent prompts. Never shared
-          across users.
+          Your agent keeps these notes itself: after each chat it saves what matters and decides
+          how important each note is. The most important notes are loaded into every conversation.
+          Only your agent can see them
+          {!isOwner && workspace ? `, and ${workspace.name} can read them` : ""}.
         </p>
       </div>
 
-      {suggested.length > 0 && (
-        <Card id="suggested">
-          <CardHeader>
-            <CardTitle>Suggested by your agent</CardTitle>
-            <CardDescription>
-              Your agent proposed these during chats. They are not used until you approve them.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="space-y-3">
-              {suggested.map((m) => (
-                <li
-                  key={m.id}
-                  className="rounded-md border border-dashed border-border px-3 py-2 text-sm"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-medium">
-                        {m.title}{" "}
-                        <span className="text-xs text-muted-foreground">[{m.kind}]</span>
-                      </p>
-                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
-                        {m.content}
-                      </p>
-                    </div>
-                    <div className="flex shrink-0 gap-1">
-                      <form action="/app/memory/approve" method="post">
-                        <input type="hidden" name="id" value={m.id} />
-                        <Button size="sm" type="submit">
-                          Approve
-                        </Button>
-                      </form>
-                      <form action="/app/memory/delete" method="post">
-                        <input type="hidden" name="id" value={m.id} />
-                        <Button variant="ghost" size="sm" type="submit">
-                          Dismiss
-                        </Button>
-                      </form>
-                    </div>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-      )}
+      {error && <p className="text-sm text-destructive">{error}</p>}
 
       <Card>
         <CardHeader>
-          <CardTitle>Add memory</CardTitle>
-          <CardDescription>Preferences, facts, research summaries</CardDescription>
+          <CardTitle>What your agent remembers</CardTitle>
+          <CardDescription>{memories.length} notes, most important first</CardDescription>
         </CardHeader>
         <CardContent>
-          <form action="/app/memory/create" method="post" className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-1.5">
-                <Label htmlFor="title">Title</Label>
-                <Input id="title" name="title" required />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="kind">Kind</Label>
-                <select
-                  id="kind"
-                  name="kind"
-                  defaultValue="note"
-                  className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm"
-                >
-                  <option value="preference">preference</option>
-                  <option value="fact">fact</option>
-                  <option value="note">note</option>
-                  <option value="research_summary">research_summary</option>
-                </select>
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="content">Content</Label>
-              <Textarea id="content" name="content" required rows={4} />
-            </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" name="pinned" />
-              Pin (always included in pack)
-            </label>
-            <Button type="submit">Save memory</Button>
-          </form>
+          <MemoryList memories={memories} deletable />
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle>Saved</CardTitle>
+          <CardTitle>Tell your agent something to remember</CardTitle>
+          <CardDescription>Optional. Never put passwords here; use Connections for logins.</CardDescription>
         </CardHeader>
         <CardContent>
-          {!memories.length ? (
-            <p className="text-sm text-muted-foreground">No memories yet.</p>
-          ) : (
-            <ul className="space-y-3">
-              {memories.map((m) => (
-                <li
-                  key={m.id}
-                  className="rounded-md border border-border/70 px-3 py-2 text-sm"
+          <form action="/app/memory/create" method="post" className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+              <div className="space-y-1.5">
+                <Label htmlFor="title">Title</Label>
+                <Input id="title" name="title" required placeholder="Risk appetite" />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="importance">Importance</Label>
+                <select
+                  id="importance"
+                  name="importance"
+                  defaultValue="4"
+                  className="h-8 w-full rounded-lg border border-border bg-background px-2 text-sm"
                 >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-medium">
-                        {m.title}{" "}
-                        <span className="text-xs text-muted-foreground">
-                          [{m.kind}
-                          {m.pinned ? ", pinned" : ""}]
-                        </span>
-                      </p>
-                      <p className="mt-1 whitespace-pre-wrap text-muted-foreground">
-                        {m.content}
-                      </p>
-                    </div>
-                    <form action="/app/memory/delete" method="post">
-                      <input type="hidden" name="id" value={m.id} />
-                      <Button variant="ghost" size="sm" type="submit">
-                        Delete
-                      </Button>
-                    </form>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
+                  <option value="5">5 · critical</option>
+                  <option value="4">4 · high</option>
+                  <option value="3">3 · normal</option>
+                  <option value="2">2 · low</option>
+                  <option value="1">1 · trivia</option>
+                </select>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="content">Content</Label>
+              <Textarea
+                id="content"
+                name="content"
+                required
+                rows={3}
+                placeholder="Moderate risk; avoid single stocks over 10% of the portfolio."
+              />
+            </div>
+            <Button type="submit">Save</Button>
+          </form>
         </CardContent>
       </Card>
     </div>

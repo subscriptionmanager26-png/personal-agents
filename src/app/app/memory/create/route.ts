@@ -1,28 +1,26 @@
 import { redirect } from "next/navigation";
 
-import { createMemory } from "@/lib/memory";
-import { getSession } from "@/lib/session";
-import type { MemoryKind } from "@/lib/types";
+import { createMemory, memoryRejection } from "@/lib/memory";
+import { requireAgentUser } from "@/lib/viewer";
 
 export async function POST(request: Request) {
-  const session = await getSession();
-  if (!session) redirect("/");
+  const { user } = await requireAgentUser();
 
   const form = await request.formData();
   const title = String(form.get("title") || "").trim();
   const content = String(form.get("content") || "").trim();
-  const kind = (String(form.get("kind") || "note") as MemoryKind) || "note";
-  const pinned = form.get("pinned") === "on";
+  if (!title || !content) redirect("/app/memory");
 
-  if (title && content) {
-    await createMemory({
-      ownerUserId: session.id,
-      kind,
-      title,
-      content,
-      pinned,
-    });
-  }
+  const rejection = memoryRejection(`${title}\n${content}`);
+  if (rejection) redirect(`/app/memory?error=${encodeURIComponent(rejection)}`);
 
+  await createMemory({
+    ownerUserId: user.id,
+    kind: "note",
+    title,
+    content,
+    importance: Number(form.get("importance") || 4),
+    source: "user",
+  });
   redirect("/app/memory");
 }

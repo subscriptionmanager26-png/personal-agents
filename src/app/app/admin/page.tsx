@@ -95,8 +95,8 @@ export default async function AdminPage() {
                   {u.id}
                 </p>
                 <p className="mt-1 text-xs break-all">
-                  repo: {u.agentRepository || "—"} · skills:{" "}
-                  {(u.enabledSkillIds || []).join(", ") || "none"}
+                  repo: {u.agentRepository || "—"} · {u.role || "no role"}
+                  {u.workspaceId ? ` in ${u.workspaceId}` : ""} · {u.membershipStatus || "—"}
                 </p>
               </div>
             ))

@@ -1,7 +1,6 @@
 import { fetchFinalAssistantMessage } from "@/lib/cursor";
 import { getJob, listDispatchedJobs, patchJob } from "@/lib/jobs";
-import { addSuggestedMemories } from "@/lib/memory";
-import { extractMemorySuggestions } from "@/lib/memory-suggestions";
+import { addAutoEpisode } from "@/lib/memory";
 import { postSlackMessage } from "@/lib/slack";
 
 const settling = new Set<string>();
@@ -44,26 +43,23 @@ export async function settleJob(
       event: { type: "settle", detail: "Delivering reply" },
     });
 
-    const raw =
+    const message =
       opts?.message ||
       (job.cursorAgentId
         ? await fetchFinalAssistantMessage(job.cursorAgentId, job.cursorRunId)
         : "Agent finished with no message.");
-    const { text: message, suggestions } = extractMemorySuggestions(raw);
 
-    let suggestedMemoryIds: string[] = [];
-    try {
-      suggestedMemoryIds = await addSuggestedMemories(ownerUserId, jobId, suggestions);
-    } catch {
-      // a failed suggestion save must not block the reply
+    const slackTs = await maybePostSlack(job, message);
+
+    // Every chat leaves a trace in memory, even when the agent saved nothing itself.
+    const latest = await getJob(jobId);
+    if (!latest?.memoryWrites) {
+      try {
+        await addAutoEpisode(ownerUserId, jobId, job.prompt, message);
+      } catch {
+        // memory is best-effort; never block the reply
+      }
     }
-
-    const slackTs = await maybePostSlack(
-      job,
-      suggestedMemoryIds.length
-        ? `${message}\n\n_Suggested ${suggestedMemoryIds.length} new ${suggestedMemoryIds.length === 1 ? "memory" : "memories"} — review them on the Memory page._`
-        : message,
-    );
 
     await patchJob(jobId, ownerUserId, {
       status: "replied",
@@ -72,7 +68,6 @@ export async function settleJob(
         receivedAt: new Date().toISOString(),
         slackMessageTs: slackTs,
       },
-      suggestedMemoryIds: suggestedMemoryIds.length ? suggestedMemoryIds : undefined,
       event: {
         type: "replied",
         detail:

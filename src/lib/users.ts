@@ -42,6 +42,8 @@ export async function registerUserWithEmail(input: {
   email: string;
   password: string;
   displayName?: string;
+  /** Sign up as a pending client of this workspace. */
+  joinWorkspaceId?: string;
 }): Promise<{ user: PersonalUser } | { error: string }> {
   const email = normalizeEmail(input.email);
   if (!isValidEmail(email)) return { error: "Enter a valid email address." };
@@ -65,10 +67,17 @@ export async function registerUserWithEmail(input: {
     if (prev?.passwordHash) {
       return { error: "taken" as const };
     }
+    const joining =
+      input.joinWorkspaceId && store.workspaces[input.joinWorkspaceId] && !prev?.workspaceId
+        ? input.joinWorkspaceId
+        : undefined;
     const next: PersonalUser = {
       id,
       email,
       passwordHash,
+      workspaceId: prev?.workspaceId ?? joining,
+      role: prev?.role ?? (joining ? "client" : undefined),
+      membershipStatus: prev?.membershipStatus ?? (joining ? "pending" : undefined),
       displayName: prev?.displayName || displayName,
       avatarUrl: prev?.avatarUrl,
       slackTeamId: prev?.slackTeamId,

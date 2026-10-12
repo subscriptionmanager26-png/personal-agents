@@ -18,8 +18,10 @@ function localPath() {
 
 const emptyStore = (): StoreData => ({
   users: {},
+  workspaces: {},
   memories: {},
   vaultItems: {},
+  connections: {},
   jobs: [],
   slackThreads: {},
   slackInstalls: {},

@@ -102,9 +102,15 @@ export async function getRun(agentId: string, runId: string) {
   return cursorGet<CursorRun>(`/v1/agents/${agentId}/runs/${runId}`);
 }
 
-export async function createRun(agentId: string, promptText: string) {
+export type McpServerDef =
+  | { name: string; type: "http" | "sse"; url: string; headers?: Record<string, string> }
+  | { name: string; type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
+
+/** Follow-up run; `mcpServers` replaces the create-time servers for this run. */
+export async function createRun(agentId: string, promptText: string, mcpServers?: McpServerDef[]) {
   return cursorPost<{ run?: CursorRun }>(`/v1/agents/${agentId}/runs`, {
     prompt: { text: promptText },
+    ...(mcpServers ? { mcpServers } : {}),
   });
 }
 
