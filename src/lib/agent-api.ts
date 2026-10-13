@@ -86,6 +86,7 @@ const POLL_MS = 700;
 const HEARTBEAT_MS = 15_000;
 /** Close before the platform's function limit; clients resume with Last-Event-ID. */
 const MAX_STREAM_MS = 270_000;
+const RUN_CHECK_MS = 5_000;
 
 function encode(event: StreamEvent) {
   const { seq, ...rest } = event;
@@ -105,6 +106,7 @@ export function messageEventStream(request: Request, ownerUserId: string, messag
     async start(controller) {
       let sent = resumeFrom;
       const started = Date.now();
+      let lastRunCheck = Date.now();
       let lastWrite = Date.now();
       const write = (text: string) => {
         controller.enqueue(encoder.encode(text));
@@ -126,6 +128,12 @@ export function messageEventStream(request: Request, ownerUserId: string, messag
           if (fresh.some((e) => e.type === "done" || e.type === "error")) break;
           if ((job.stream ?? []).some((e) => e.seq <= sent && (e.type === "done" || e.type === "error"))) break;
           if (Date.now() - started > MAX_STREAM_MS) break;
+          // Nothing else watches API runs, so check Cursor while the caller is listening.
+          if (Date.now() - lastRunCheck > RUN_CHECK_MS) {
+            lastRunCheck = Date.now();
+            const { settleIfFinished } = await import("@/lib/settle");
+            await settleIfFinished(job).catch(() => undefined);
+          }
           if (Date.now() - lastWrite > HEARTBEAT_MS) write(": heartbeat\n\n");
           await new Promise((resolve) => setTimeout(resolve, POLL_MS));
         }

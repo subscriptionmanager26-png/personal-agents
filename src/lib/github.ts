@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 
 import { getConfig } from "@/lib/config";
+import { runtimeForUser } from "@/lib/runtime";
 import { renderSkillFile, skillInstallDir } from "@/lib/skills";
 import { appendAudit, updateUser } from "@/lib/users";
 import { skillsHash } from "@/lib/workspaces";
@@ -8,26 +9,28 @@ import type { PersonalUser, Workspace } from "@/lib/types";
 
 const API = "https://api.github.com";
 
-function authHeaders() {
-  const { githubToken } = getConfig();
-  if (!githubToken) throw new Error("GITHUB_TOKEN is not configured");
+type GithubCreds = { token: string; org: string };
+
+/** The client's workspace token (or the GITHUB_TOKEN fallback); never another workspace's. */
+async function credsFor(user: PersonalUser): Promise<GithubCreds> {
+  const rt = await runtimeForUser(user);
+  return { token: rt.githubToken, org: rt.githubOrg };
+}
+
+function authHeaders(token: string) {
+  if (!token) throw new Error("GitHub is not configured");
   return {
-    Authorization: `Bearer ${githubToken}`,
+    Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
     "User-Agent": "personal-agents-control-plane",
   };
 }
 
-export function isGithubConfigured() {
-  return Boolean(getConfig().githubToken);
-}
-
-/** Org login from env, or the authenticated GitHub user when GITHUB_ORG is unset. */
-async function resolveGithubOwner() {
-  const { githubOrg } = getConfig();
-  if (githubOrg) return { owner: githubOrg, isOrg: true as const };
-  const user = await gh<{ login?: string }>("/user");
+/** The configured org, or the token's own GitHub account. */
+async function resolveGithubOwner(creds: GithubCreds) {
+  if (creds.org) return { owner: creds.org, isOrg: true as const };
+  const user = await gh<{ login?: string }>(creds, "/user");
   const login =
     user.ok && user.body && typeof user.body === "object"
       ? (user.body as { login?: string }).login
@@ -62,13 +65,14 @@ function repoNameForUser(user: PersonalUser) {
 }
 
 async function gh<T>(
+  creds: GithubCreds,
   path: string,
   init?: RequestInit,
 ): Promise<{ ok: boolean; status: number; body: T | unknown }> {
   const response = await fetch(`${API}${path}`, {
     ...init,
     headers: {
-      ...authHeaders(),
+      ...authHeaders(creds.token),
       ...(init?.headers || {}),
     },
     cache: "no-store",
@@ -92,7 +96,8 @@ const RUNTIME_FILES = [
 
 /** Push vault MCP + environment files into an existing personal repo when they changed. */
 export async function syncVaultRuntimeFiles(user: PersonalUser): Promise<PersonalUser> {
-  if (!isGithubConfigured() || !user.agentRepository) return user;
+  const creds = await credsFor(user);
+  if (!creds.token || !user.agentRepository) return user;
   const { promises: fs } = await import("node:fs");
   const path = await import("node:path");
   const root = path.join(process.cwd(), "agent-template");
@@ -108,7 +113,7 @@ export async function syncVaultRuntimeFiles(user: PersonalUser): Promise<Persona
 
   const { owner, repo } = parseRepo(user.agentRepository);
   for (const file of files) {
-    await putFile(owner, repo, file.rel, file.content, `Sync agent runtime: ${file.rel}`);
+    await putFile(creds, owner, repo, file.rel, file.content, `Sync agent runtime: ${file.rel}`);
   }
   return (await updateUser(user.id, { runtimeSyncedHash: hash })) ?? user;
 }
@@ -123,17 +128,18 @@ export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUs
       return user;
     }
   }
-  if (!isGithubConfigured()) {
+  const creds = await credsFor(user);
+  if (!creds.token) {
     const updated = await updateUser(user.id, {
       provisionError:
-        "GitHub not configured. Set GITHUB_TOKEN (optional GITHUB_ORG, AGENT_TEMPLATE_REPO).",
+        "GitHub is not configured. The workspace owner can add a GitHub token under Developers → Agent runtime.",
     });
     return updated ?? user;
   }
 
   let ownerInfo;
   try {
-    ownerInfo = await resolveGithubOwner();
+    ownerInfo = await resolveGithubOwner(creds);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     const updated = await updateUser(user.id, { provisionError: detail });
@@ -146,6 +152,7 @@ export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUs
 
   // Already exists?
   const existing = await gh<{ html_url?: string; clone_url?: string }>(
+    creds,
     `/repos/${fullName}`,
   );
   if (existing.ok) {
@@ -166,6 +173,7 @@ export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUs
       .replace(/\.git$/, "")
       .split("/");
     const created = await gh<{ html_url?: string }>(
+      creds,
       `/repos/${templateOwner}/${templateRepo}/generate`,
       {
         method: "POST",
@@ -195,6 +203,7 @@ export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUs
       description: `Personal Cursor agent workspace for ${user.id}`,
     };
     let created = await gh<{ html_url?: string; full_name?: string }>(
+      creds,
       ownerInfo.isOrg ? `/orgs/${ownerInfo.owner}/repos` : "/user/repos",
       { method: "POST", body: JSON.stringify(payload) },
     );
@@ -202,6 +211,7 @@ export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUs
     // Org missing / no access → fall back to the token's user account.
     if (!created.ok && ownerInfo.isOrg) {
       created = await gh<{ html_url?: string; full_name?: string }>(
+        creds,
         "/user/repos",
         { method: "POST", body: JSON.stringify(payload) },
       );
@@ -221,7 +231,7 @@ export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUs
       }`;
 
     // Seed essential files from local agent-template
-    await seedTemplateFiles(createdUrl);
+    await seedTemplateFiles(creds, createdUrl);
   }
 
   const updated = await updateUser(user.id, {
@@ -245,6 +255,7 @@ function parseRepo(url: string) {
 }
 
 async function putFile(
+  creds: GithubCreds,
   owner: string,
   repo: string,
   filePath: string,
@@ -252,13 +263,14 @@ async function putFile(
   message: string,
 ) {
   const existing = await gh<{ sha?: string }>(
+    creds,
     `/repos/${owner}/${repo}/contents/${filePath}`,
   );
   const sha =
     existing.ok && existing.body && typeof existing.body === "object"
       ? (existing.body as { sha?: string }).sha
       : undefined;
-  return gh(`/repos/${owner}/${repo}/contents/${filePath}`, {
+  return gh(creds, `/repos/${owner}/${repo}/contents/${filePath}`, {
     method: "PUT",
     body: JSON.stringify({
       message,
@@ -268,7 +280,7 @@ async function putFile(
   });
 }
 
-async function seedTemplateFiles(repoUrl: string) {
+async function seedTemplateFiles(creds: GithubCreds, repoUrl: string) {
   const { owner, repo } = parseRepo(repoUrl);
   const { promises: fs } = await import("node:fs");
   const path = await import("node:path");
@@ -287,21 +299,21 @@ async function seedTemplateFiles(repoUrl: string) {
       if (ent.isDirectory()) await walk(full, rel);
       else if (ent.isFile()) {
         const content = await fs.readFile(full, "utf8");
-        await putFile(owner, repo, rel, content, `Seed ${rel}`);
+        await putFile(creds, owner, repo, rel, content, `Seed ${rel}`);
       }
     }
   }
   await walk(root);
 }
 
-async function deleteFile(owner: string, repo: string, filePath: string, message: string) {
-  const existing = await gh<{ sha?: string }>(`/repos/${owner}/${repo}/contents/${filePath}`);
+async function deleteFile(creds: GithubCreds, owner: string, repo: string, filePath: string, message: string) {
+  const existing = await gh<{ sha?: string }>(creds, `/repos/${owner}/${repo}/contents/${filePath}`);
   const sha =
     existing.ok && existing.body && typeof existing.body === "object"
       ? (existing.body as { sha?: string }).sha
       : undefined;
   if (!sha) return;
-  await gh(`/repos/${owner}/${repo}/contents/${filePath}`, {
+  await gh(creds, `/repos/${owner}/${repo}/contents/${filePath}`, {
     method: "DELETE",
     body: JSON.stringify({ message, sha }),
   });
@@ -315,13 +327,14 @@ const SKILL_MANIFEST = ".cursor/skills/workspace/manifest.json";
  */
 export async function syncWorkspaceSkills(user: PersonalUser, workspace: Workspace | undefined) {
   const hash = skillsHash(workspace);
-  if (!isGithubConfigured() || !user.agentRepository) return undefined;
+  const creds = await credsFor(user);
+  if (!creds.token || !user.agentRepository) return undefined;
   if (user.skillsSyncedHash === hash) return hash;
 
   const { owner, repo } = parseRepo(user.agentRepository);
   const skills = workspace?.skills ?? [];
 
-  const manifest = await gh<{ content?: string }>(`/repos/${owner}/${repo}/contents/${SKILL_MANIFEST}`);
+  const manifest = await gh<{ content?: string }>(creds, `/repos/${owner}/${repo}/contents/${SKILL_MANIFEST}`);
   let previous: string[] = [];
   if (manifest.ok && manifest.body && typeof manifest.body === "object") {
     try {
@@ -334,16 +347,17 @@ export async function syncWorkspaceSkills(user: PersonalUser, workspace: Workspa
 
   for (const skill of skills) {
     const dest = `${skillInstallDir(skill)}/SKILL.md`;
-    const result = await putFile(owner, repo, dest, renderSkillFile(skill), `Sync skill ${skill.slug}`);
+    const result = await putFile(creds, owner, repo, dest, renderSkillFile(skill), `Sync skill ${skill.slug}`);
     if (!result.ok) {
       throw new Error(`Failed to write ${dest}: ${JSON.stringify(result.body).slice(0, 200)}`);
     }
   }
   const current = new Set(skills.map((s) => s.slug));
   for (const slug of previous.filter((s) => !current.has(s))) {
-    await deleteFile(owner, repo, `${skillInstallDir({ slug })}/SKILL.md`, `Remove skill ${slug}`);
+    await deleteFile(creds, owner, repo, `${skillInstallDir({ slug })}/SKILL.md`, `Remove skill ${slug}`);
   }
   await putFile(
+    creds,
     owner,
     repo,
     SKILL_MANIFEST,

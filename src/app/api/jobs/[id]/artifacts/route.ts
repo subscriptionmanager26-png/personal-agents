@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { listArtifacts } from "@/lib/cursor-api";
+import { runtimeForUserId } from "@/lib/runtime";
 import { getOwnedJob } from "@/lib/job-access";
 import { isMockRunId, MOCK_ARTIFACTS } from "@/lib/mock-trace";
 import { artifactKind, type ArtifactItem } from "@/lib/trace-types";
@@ -28,7 +29,7 @@ export async function GET(
   try {
     // Artifacts are agent-scoped; keep the ones written since this message was sent.
     const since = Date.parse(job.createdAt);
-    const items: ArtifactItem[] = (await listArtifacts(job.cursorAgentId))
+    const items: ArtifactItem[] = (await listArtifacts((await runtimeForUserId(job.ownerUserId)).cursorApiKey, job.cursorAgentId))
       .filter((a) => !a.updatedAt || Date.parse(a.updatedAt) >= since)
       .map((a) => ({ ...a, kind: artifactKind(a.path) }));
     return NextResponse.json({ items });

@@ -151,8 +151,23 @@ export type Workspace = {
   apiKeys?: ApiKey[];
   /** Encrypted HS256 secret the company uses to verify per-user tokens. */
   mcpSigningSecretEnc?: string;
+  /** The workspace's own Cursor and GitHub credentials; env vars are the fallback. */
+  runtime?: AgentRuntimeSettings;
   createdAt: string;
   updatedAt: string;
+};
+
+export type AgentRuntimeSettings = {
+  cursorApiKeyEnc?: string;
+  /** Who the key belongs to, from Cursor, e.g. "ops@finco.com · key …a1b2". */
+  cursorKeyLabel?: string;
+  githubTokenEnc?: string;
+  githubTokenLabel?: string;
+  /** Org for client repos; blank means the token's own account. */
+  githubOrg?: string;
+  /** Public base URL of this app that Cursor's cloud can reach (tools, files, memory). */
+  agentPublicUrl?: string;
+  updatedAt?: string;
 };
 
 export type CompanyServer = {

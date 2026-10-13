@@ -21,7 +21,7 @@ export function mockReplyText(prompt: string) {
     ``,
     `The full report is in artifacts/report.md, with screenshots of each step.`,
     ``,
-    `(Mock run: CURSOR_API_KEY is not set, so this trace is simulated. You asked: "${prompt.slice(0, 120)}")`,
+    `(Mock run: no Cursor API key is set for this workspace, so this trace is simulated. You asked: "${prompt.slice(0, 120)}")`,
   ].join("\n");
 }
 

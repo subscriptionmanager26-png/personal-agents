@@ -1,7 +1,9 @@
 import { fetchFinalAssistantMessage } from "@/lib/cursor";
+import { runtimeForUserId } from "@/lib/runtime";
 import { getJob, listDispatchedJobs, patchJob } from "@/lib/jobs";
 import { addAutoEpisode } from "@/lib/memory";
 import { postSlackMessage } from "@/lib/slack";
+import type { Job } from "@/lib/types";
 
 const settling = new Set<string>();
 
@@ -46,7 +48,7 @@ export async function settleJob(
     const message =
       opts?.message ||
       (job.cursorAgentId
-        ? await fetchFinalAssistantMessage(job.cursorAgentId, job.cursorRunId)
+        ? await fetchFinalAssistantMessage(ownerUserId, job.cursorAgentId, job.cursorRunId)
         : "Agent finished with no message.");
 
     const slackTs = await maybePostSlack(job, message);
@@ -107,31 +109,31 @@ export async function settleByAgentId(agentId: string) {
   }
 }
 
+/** Settles one dispatched job if its Cursor run has ended. */
+export async function settleIfFinished(job: Job) {
+  if (!job.cursorAgentId || job.cursorAgentId.startsWith("mock-")) return;
+  if (job.status !== "dispatched" && job.status !== "delivering") return;
+  const { getAgent, getRun, TERMINAL_RUN_STATUSES } = await import("@/lib/cursor-api");
+  const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
+  if (job.cursorRunId) {
+    const run = await getRun(key, job.cursorAgentId, job.cursorRunId);
+    if (TERMINAL_RUN_STATUSES.includes((run.status || "").toUpperCase())) {
+      await settleJob(job.id, job.ownerUserId);
+    }
+    return;
+  }
+  const agent = await getAgent(key, job.cursorAgentId);
+  const status = (agent.status || "").toUpperCase();
+  if (status.includes("FINISH") || status.includes("ERROR") || status === "IDLE" || status.includes("COMPLETE")) {
+    await settleJob(job.id, job.ownerUserId);
+  }
+}
+
 export async function pollDispatchedJobs() {
   const jobs = await listDispatchedJobs();
   for (const job of jobs) {
-    if (!job.cursorAgentId || job.cursorAgentId.startsWith("mock-")) continue;
     try {
-      const { getAgent, getRun, TERMINAL_RUN_STATUSES } = await import(
-        "@/lib/cursor-api"
-      );
-      if (job.cursorRunId) {
-        const run = await getRun(job.cursorAgentId, job.cursorRunId);
-        if (TERMINAL_RUN_STATUSES.includes((run.status || "").toUpperCase())) {
-          await settleJob(job.id, job.ownerUserId);
-        }
-        continue;
-      }
-      const agent = await getAgent(job.cursorAgentId);
-      const status = (agent.status || "").toUpperCase();
-      if (
-        status.includes("FINISH") ||
-        status.includes("ERROR") ||
-        status === "IDLE" ||
-        status.includes("COMPLETE")
-      ) {
-        await settleJob(job.id, job.ownerUserId);
-      }
+      await settleIfFinished(job);
     } catch {
       // keep polling later
     }

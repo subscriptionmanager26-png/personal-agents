@@ -1,4 +1,3 @@
-import { getConfig } from "@/lib/config";
 import { describeFile, getFile, listFiles, readExtract, readSlice } from "@/lib/files";
 import { appendStreamEvents, getJob, patchJob } from "@/lib/jobs";
 import { handleMcpBody, toolText, type McpTool, type ToolResult } from "@/lib/mcp-server";
@@ -14,6 +13,7 @@ import {
   updateMemory,
 } from "@/lib/memory";
 import { describeOrder, proposeOrder, validateOrder } from "@/lib/orders";
+import { runtimeForUserId } from "@/lib/runtime";
 import { createFileToken, verifyMemoryToken } from "@/lib/run-token";
 import type { MemoryEntry, StreamEventInput } from "@/lib/types";
 import { cardBlock, chartBlock, safeLoginUrl, tableBlock } from "@/lib/ui-blocks";
@@ -229,7 +229,7 @@ async function callFileTool(ownerUserId: string, jobId: string, name: string, ar
       if (!file) return toolText({ error: "No file with that id. Use list_files." }, true);
       if (file.status !== "ready") return toolText({ error: `${file.name} is locked or unreadable; ask the client to unlock it in the app.` }, true);
       if (name === "get_file_link") {
-        const base = getConfig().publicUrl.replace(/\/$/, "");
+        const base = (await runtimeForUserId(ownerUserId)).agentPublicUrl;
         if (!base) return toolText({ error: "Download links are not available on this server. Use read_file." }, true);
         const token = await createFileToken({ ownerUserId, fileId: file.id });
         return toolText({ name: file.name, url: `${base}/api/files/${file.id}/download?t=${token}`, expires_in_minutes: 15 });

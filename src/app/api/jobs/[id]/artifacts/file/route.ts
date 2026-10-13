@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getArtifactDownloadUrl } from "@/lib/cursor-api";
+import { runtimeForUserId } from "@/lib/runtime";
 import { getOwnedJob, isSafeArtifactPath } from "@/lib/job-access";
 import { isMockRunId, mockArtifactContent } from "@/lib/mock-trace";
 import { artifactKind } from "@/lib/trace-types";
@@ -61,7 +62,8 @@ export async function GET(
   }
 
   try {
-    const { url } = await getArtifactDownloadUrl(job.cursorAgentId, path);
+    const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
+    const { url } = await getArtifactDownloadUrl(key, job.cursorAgentId, path);
     if (asText) {
       const res = await fetch(url, { cache: "no-store" });
       if (!res.ok) throw new Error(`Artifact fetch failed (${res.status})`);

@@ -10,7 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { isMockCursor } from "@/lib/config";
+import { runtimeFor } from "@/lib/runtime";
 import { requestOrigin } from "@/lib/request-origin";
 import { getViewer } from "@/lib/viewer";
 import { canUseAgent, listClients } from "@/lib/workspaces";
@@ -93,9 +93,12 @@ export default async function HomePage() {
         </Link>
       </div>
 
-      {isMockCursor() && (
+      {!runtimeFor(workspace).cursorApiKey && (
         <p className="text-xs text-muted-foreground">
-          Running without a Cursor API key: agent replies are simulated.
+          Running without a Cursor API key: agent replies are simulated.{" "}
+          <Link href="/app/developers#runtime" className="text-foreground underline underline-offset-4">
+            Add your key
+          </Link>
         </p>
       )}
     </div>

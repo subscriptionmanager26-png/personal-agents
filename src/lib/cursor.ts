@@ -1,6 +1,6 @@
 import { AGENT_MCP_NAME } from "@/lib/agent-mcp";
 import { companyServersForUser } from "@/lib/company";
-import { getConfig, isMockCursor } from "@/lib/config";
+import { getConfig } from "@/lib/config";
 import { mcpServersForUser } from "@/lib/connections";
 import {
   createRun,
@@ -17,31 +17,31 @@ import { patchJob } from "@/lib/jobs";
 import { mockRunId } from "@/lib/mock-trace";
 import { buildPersonalAgentPrompt } from "@/lib/prompt";
 import { createMemoryToken } from "@/lib/run-token";
+import { runtimeFor, runtimeForUserId, type AgentRuntime } from "@/lib/runtime";
 import { createVaultJobToken, listVaultLabels } from "@/lib/vault";
 import { getUser, updateUser } from "@/lib/users";
 import { canUseAgent, getWorkspace, skillsHash } from "@/lib/workspaces";
 import type { Job, PersonalUser, Workspace } from "@/lib/types";
 
-/** Cursor's backend must be able to reach our memory MCP endpoint. */
-function publicBaseUrl() {
-  const url = getConfig().publicUrl.replace(/\/$/, "");
-  if (!url) return undefined;
+/** Local dev servers (the mock broker and backtester) are only reachable through the public URL. */
+function reachableServerUrl(url: string, base: string | undefined) {
   try {
-    const host = new URL(url).hostname;
-    if (host === "localhost" || host === "0.0.0.0" || host.startsWith("127.")) return undefined;
+    const parsed = new URL(url);
+    const local = parsed.hostname === "localhost" || parsed.hostname.startsWith("127.");
+    return local && base ? `${base}${parsed.pathname}${parsed.search}` : url;
   } catch {
-    return undefined;
+    return url;
   }
-  return url;
 }
 
 async function failJob(job: Job, userId: string, detail: string) {
   await patchJob(job.id, userId, { status: "error", error: detail, event: { type: "error", detail } });
 }
 
-async function buildMcpServers(user: PersonalUser, job: Job, workspace: Workspace | undefined) {
+async function buildMcpServers(user: PersonalUser, job: Job, workspace: Workspace | undefined, rt: AgentRuntime) {
   const servers: McpServerDef[] = [];
-  const base = publicBaseUrl();
+  // Cursor's backend must be able to reach our agent MCP endpoint.
+  const base = rt.agentPublicUrl || undefined;
   if (base) {
     servers.push({
       name: AGENT_MCP_NAME,
@@ -50,7 +50,9 @@ async function buildMcpServers(user: PersonalUser, job: Job, workspace: Workspac
       headers: { Authorization: `Bearer ${await createMemoryToken({ ownerUserId: user.id, jobId: job.id })}` },
     });
   }
-  const company = await companyServersForUser(workspace, user);
+  const company = (await companyServersForUser(workspace, user)).map((s) =>
+    s.type === "stdio" ? s : { ...s, url: reachableServerUrl(s.url, base) },
+  );
   servers.push(...company);
   if (base && (await listVaultLabels(user.id)).length) {
     // vault_fill must type into the VM's browser, so this one runs inside the VM.
@@ -89,8 +91,9 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     return { user: latest, agentId: undefined, mock: false };
   }
   const workspace = await getWorkspace(latest.workspaceId);
+  const rt = runtimeFor(workspace);
 
-  if (isMockCursor()) {
+  if (!rt.cursorApiKey) {
     const mockId = latest.cursorAgentId || `mock-${latest.id}`;
     const current = latest.cursorAgentId
       ? latest
@@ -101,7 +104,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
       cursorRunId: mockRunId(job.id),
       cursorHttpStatus: 200,
       cursorBody: { mock: true, id: mockId },
-      event: { type: "dispatch", detail: "Mock Cursor dispatch (CURSOR_API_KEY unset)" },
+      event: { type: "dispatch", detail: "Simulated dispatch (no Cursor API key for this workspace)" },
     });
     const { runMockAgent } = await import("@/lib/mock-agent");
     const message = await runMockAgent(current, job, workspace);
@@ -124,7 +127,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     // fall back to inlining the skills in the prompt
   }
   const hash = skillsHash(workspace);
-  const mcp = await buildMcpServers(current, job, workspace);
+  const mcp = await buildMcpServers(current, job, workspace, rt);
   const promptText = await buildPersonalAgentPrompt(current, job, {
     agentTools: mcp.agentTools,
     skillsInRepo,
@@ -135,7 +138,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   // One standing agent per client; replace it only when the owner's skills changed,
   // because a running agent keeps the repo checkout it started with.
   if (current.cursorAgentId && current.cursorAgentSkillsHash === hash) {
-    const run = await createRun(current.cursorAgentId, promptText, mcp.servers);
+    const run = await createRun(rt.cursorApiKey, current.cursorAgentId, promptText, mcp.servers);
     const runId = run.ok ? extractRunId(run.body) : undefined;
     if (runId) {
       await patchJob(job.id, current.id, {
@@ -155,7 +158,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     // Agent expired or was removed: start a fresh one below. Memory and recent chat carry over.
   }
 
-  const created = await createAgent(current, promptText, mcp.servers);
+  const created = await createAgent(rt.cursorApiKey, current, promptText, mcp.servers);
   current =
     (await updateUser(current.id, { cursorAgentId: created.agentId, cursorAgentSkillsHash: hash })) ?? current;
   await patchJob(job.id, current.id, {
@@ -169,11 +172,11 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   return { user: current, agentId: created.agentId, mock: false };
 }
 
-async function createAgent(user: PersonalUser, promptText: string, mcpServers: McpServerDef[]) {
+async function createAgent(key: string, user: PersonalUser, promptText: string, mcpServers: McpServerDef[]) {
   const cfg = getConfig();
   const repository = user.agentRepository!;
 
-  const v1 = await cursorPost("/v1/agents", {
+  const v1 = await cursorPost(key, "/v1/agents", {
     prompt: { text: promptText },
     repos: [{ url: repository, startingRef: user.agentRef || "main" }],
     autoCreatePR: false,
@@ -193,7 +196,7 @@ async function createAgent(user: PersonalUser, promptText: string, mcpServers: M
   if (cfg.cursorStatusWebhookUrl && cfg.cursorStatusWebhookSecret) {
     v0Body.webhook = { url: cfg.cursorStatusWebhookUrl, secret: cfg.cursorStatusWebhookSecret };
   }
-  const result = await cursorPost("/v0/agents", v0Body);
+  const result = await cursorPost(key, "/v0/agents", v0Body);
   const agentId = extractAgentId(result.body);
   if (!result.ok || !agentId) {
     throw new Error(`Cursor create failed: ${JSON.stringify(v1.body || result.body).slice(0, 400)}`);
@@ -201,19 +204,20 @@ async function createAgent(user: PersonalUser, promptText: string, mcpServers: M
   return { agentId, runId: undefined as string | undefined, status: result.status, body: result.body };
 }
 
-export async function fetchFinalAssistantMessage(agentId: string, runId?: string) {
+export async function fetchFinalAssistantMessage(ownerUserId: string, agentId: string, runId?: string) {
   if (agentId.startsWith("mock-")) {
     return "Mock agent completed.";
   }
+  const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
   if (runId) {
     try {
-      const run = await getRun(agentId, runId);
+      const run = await getRun(key, agentId, runId);
       if (run.result?.trim()) return run.result.trim();
     } catch {
       // fall back to the v0 conversation below
     }
   }
-  const conversation = await getAgentConversation(agentId);
+  const conversation = await getAgentConversation(key, agentId);
   const messages = conversation.messages ?? [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
@@ -222,6 +226,6 @@ export async function fetchFinalAssistantMessage(agentId: string, runId?: string
       if (m.text?.trim()) return m.text.trim();
     }
   }
-  const agent = await getAgent(agentId);
+  const agent = await getAgent(key, agentId);
   return `Agent status: ${agent.status || "unknown"}`;
 }

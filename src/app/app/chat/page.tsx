@@ -10,7 +10,7 @@ import { chatMessage, listChatThreads, listThreadJobs, newThreadId } from "@/lib
 import { requireAgentUser } from "@/lib/viewer";
 
 import { AgentProgress } from "./agent-progress";
-import { FileBrowser } from "./file-browser";
+import { FilesPanel, FilesProvider, FilesToggle, MessageFiles, type FilesJob } from "./files-panel";
 import { ChatRefresh } from "./refresh-client";
 
 export const dynamic = "force-dynamic";
@@ -82,28 +82,46 @@ export default async function ChatPage({
   }
 
   const last = messages[messages.length - 1].message;
+  const filesJobs: FilesJob[] = messages
+    .filter(({ job }) => job.cursorAgentId)
+    .map(({ job, message }) => ({
+      id: job.id,
+      title: message.text.replace(/\s+/g, " ").slice(0, 80),
+      active: message.status === "working",
+    }));
+  const uploads = [...new Map(messages.flatMap(({ message }) => message.attachments).map((a) => [a.id, a])).values()];
+
   return (
-    <div className="flex min-h-full shrink-0 flex-col">
-      <ChatRefresh active={working} />
-      <TopBar title={thread?.title ?? "Chat"} />
-      <div className="mx-auto w-full max-w-3xl flex-1 space-y-10 px-4 pt-8 pb-10">
-        {messages.map(({ job, message }) => (
-          <section key={message.id} className="space-y-5">
-            <UserMessage text={message.text} attachments={message.attachments} />
-            <AssistantMessage
-              message={message}
-              live={<AgentProgress jobId={job.id} startedAt={job.createdAt} steps={message.steps} />}
-            >
-              {job.cursorAgentId ? <FileBrowser jobId={job.id} active={message.status === "working"} /> : null}
-            </AssistantMessage>
-          </section>
-        ))}
-        {errorBanner}
-        <ScrollAnchor version={`${messages.length}:${last.status}:${last.blocks.length}:${last.steps.length}`} />
+    <FilesProvider jobs={filesJobs} uploads={uploads}>
+      <div className="flex min-h-full shrink-0 flex-col">
+        <ChatRefresh active={working} />
+        <TopBar title={thread?.title ?? "Chat"}>
+          <FilesToggle />
+        </TopBar>
+        <div className="flex flex-1">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <div className="mx-auto w-full max-w-3xl flex-1 space-y-10 px-4 pt-8 pb-10">
+              {messages.map(({ job, message }) => (
+                <section key={message.id} className="space-y-5">
+                  <UserMessage text={message.text} attachments={message.attachments} />
+                  <AssistantMessage
+                    message={message}
+                    live={<AgentProgress jobId={job.id} startedAt={job.createdAt} steps={message.steps} />}
+                  >
+                    {job.cursorAgentId ? <MessageFiles jobId={job.id} /> : null}
+                  </AssistantMessage>
+                </section>
+              ))}
+              {errorBanner}
+              <ScrollAnchor version={`${messages.length}:${last.status}:${last.blocks.length}:${last.steps.length}`} />
+            </div>
+            <div className="sticky bottom-0 z-10 bg-linear-to-t from-background from-70% to-transparent px-4 pt-6 pb-4">
+              <div className="mx-auto max-w-3xl">{composer(false)}</div>
+            </div>
+          </div>
+          <FilesPanel />
+        </div>
       </div>
-      <div className="sticky bottom-0 z-10 bg-linear-to-t from-background from-70% to-transparent px-4 pt-6 pb-4">
-        <div className="mx-auto max-w-3xl">{composer(false)}</div>
-      </div>
-    </div>
+    </FilesProvider>
   );
 }

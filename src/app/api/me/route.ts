@@ -4,7 +4,7 @@ import { activeBackend } from "@/lib/store";
 import { getSession } from "@/lib/session";
 import { getUser } from "@/lib/users";
 import { listJobsForUser } from "@/lib/jobs";
-import { isMockCursor } from "@/lib/config";
+import { runtimeForUser } from "@/lib/runtime";
 
 export async function GET() {
   const session = await getSession();
@@ -21,7 +21,7 @@ export async function GET() {
     jobs,
     meta: {
       store: activeBackend(),
-      mockCursor: isMockCursor(),
+      mockCursor: !(await runtimeForUser(user)).cursorApiKey,
     },
   });
 }

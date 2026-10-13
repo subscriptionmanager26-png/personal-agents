@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getAgentV1, openRunStream } from "@/lib/cursor-api";
+import { runtimeForUserId } from "@/lib/runtime";
 import { getOwnedJob } from "@/lib/job-access";
 import { patchJob } from "@/lib/jobs";
 import { isMockRunId, mockScript } from "@/lib/mock-trace";
@@ -85,9 +86,10 @@ export async function GET(
           return controller.close();
         }
 
+        const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
         let runId = job.cursorRunId;
         if (!runId) {
-          const agent = await getAgentV1(job.cursorAgentId).catch(() => undefined);
+          const agent = await getAgentV1(key, job.cursorAgentId).catch(() => undefined);
           runId = agent?.latestRunId;
         }
         if (!runId) {
@@ -95,7 +97,7 @@ export async function GET(
           return finish();
         }
 
-        const upstream = await openRunStream(job.cursorAgentId, runId, {
+        const upstream = await openRunStream(key, job.cursorAgentId, runId, {
           lastEventId,
           signal: request.signal,
         });

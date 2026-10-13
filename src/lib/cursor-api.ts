@@ -1,16 +1,11 @@
-import { getConfig } from "@/lib/config";
-
 const API = "https://api.cursor.com";
 
-function apiToken() {
-  return getConfig().cursorApiKey;
-}
-
+/** Every call takes the workspace's key explicitly (see `runtimeFor`), never a global one. */
 export async function cursorPost<T>(
+  token: string,
   path: string,
   body: unknown,
 ): Promise<{ ok: boolean; status: number; body: T | unknown }> {
-  const token = apiToken();
   if (!token) throw new Error("Cursor API key is not configured");
   const response = await fetch(`${API}${path}`, {
     method: "POST",
@@ -32,8 +27,7 @@ export async function cursorPost<T>(
   return { ok: response.ok, status: response.status, body: parsed };
 }
 
-export async function cursorGet<T>(path: string): Promise<T> {
-  const token = apiToken();
+export async function cursorGet<T>(token: string, path: string): Promise<T> {
   if (!token) throw new Error("Cursor API key is not configured");
   const response = await fetch(`${API}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -61,14 +55,14 @@ export function extractAgentId(body: unknown): string | undefined {
   return undefined;
 }
 
-export async function getAgentConversation(agentId: string) {
+export async function getAgentConversation(token: string, agentId: string) {
   return cursorGet<{
     messages?: { id?: string; type?: string; text?: string; role?: string }[];
-  }>(`/v0/agents/${agentId}/conversation`);
+  }>(token, `/v0/agents/${agentId}/conversation`);
 }
 
-export async function getAgent(agentId: string) {
-  return cursorGet<{ id?: string; status?: string }>(`/v0/agents/${agentId}`);
+export async function getAgent(token: string, agentId: string) {
+  return cursorGet<{ id?: string; status?: string }>(token, `/v0/agents/${agentId}`);
 }
 
 export type CursorRun = {
@@ -92,14 +86,15 @@ export function extractRunId(body: unknown): string | undefined {
   return undefined;
 }
 
-export async function getAgentV1(agentId: string) {
+export async function getAgentV1(token: string, agentId: string) {
   return cursorGet<{ id: string; status?: string; latestRunId?: string; url?: string }>(
+    token,
     `/v1/agents/${agentId}`,
   );
 }
 
-export async function getRun(agentId: string, runId: string) {
-  return cursorGet<CursorRun>(`/v1/agents/${agentId}/runs/${runId}`);
+export async function getRun(token: string, agentId: string, runId: string) {
+  return cursorGet<CursorRun>(token, `/v1/agents/${agentId}/runs/${runId}`);
 }
 
 export type McpServerDef =
@@ -107,8 +102,8 @@ export type McpServerDef =
   | { name: string; type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };
 
 /** Follow-up run; `mcpServers` replaces the create-time servers for this run. */
-export async function createRun(agentId: string, promptText: string, mcpServers?: McpServerDef[]) {
-  return cursorPost<{ run?: CursorRun }>(`/v1/agents/${agentId}/runs`, {
+export async function createRun(token: string, agentId: string, promptText: string, mcpServers?: McpServerDef[]) {
+  return cursorPost<{ run?: CursorRun }>(token, `/v1/agents/${agentId}/runs`, {
     prompt: { text: promptText },
     ...(mcpServers ? { mcpServers } : {}),
   });
@@ -116,11 +111,11 @@ export async function createRun(agentId: string, promptText: string, mcpServers?
 
 /** Opens the raw Cursor SSE stream for one run. Caller owns the response body. */
 export async function openRunStream(
+  token: string,
   agentId: string,
   runId: string,
   opts: { lastEventId?: string; signal?: AbortSignal } = {},
 ) {
-  const token = apiToken();
   if (!token) throw new Error("Cursor API key is not configured");
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
@@ -136,15 +131,17 @@ export async function openRunStream(
 
 export type CursorArtifact = { path: string; sizeBytes?: number; updatedAt?: string };
 
-export async function listArtifacts(agentId: string) {
+export async function listArtifacts(token: string, agentId: string) {
   const body = await cursorGet<{ items?: CursorArtifact[] }>(
+    token,
     `/v1/agents/${agentId}/artifacts`,
   );
   return body.items ?? [];
 }
 
-export async function getArtifactDownloadUrl(agentId: string, path: string) {
+export async function getArtifactDownloadUrl(token: string, agentId: string, path: string) {
   return cursorGet<{ url: string; expiresAt?: string }>(
+    token,
     `/v1/agents/${agentId}/artifacts/download?path=${encodeURIComponent(path)}`,
   );
 }
