@@ -1,3 +1,4 @@
+import { clientText } from "@/lib/client-text";
 import { fetchFinalAssistantMessage } from "@/lib/cursor";
 import { runtimeForUserId } from "@/lib/runtime";
 import { getJob, listDispatchedJobs, patchJob } from "@/lib/jobs";
@@ -51,7 +52,7 @@ export async function settleJob(
         ? await fetchFinalAssistantMessage(ownerUserId, job.cursorAgentId, job.cursorRunId)
         : "Agent finished with no message.");
 
-    const slackTs = await maybePostSlack(job, message);
+    const slackTs = await maybePostSlack(job, clientText(message));
 
     // Every chat leaves a trace in memory, even when the agent saved nothing itself.
     const latest = await getJob(jobId);

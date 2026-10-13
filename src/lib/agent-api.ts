@@ -1,3 +1,4 @@
+import { clientAction, clientBlock, clientError, clientStreamEvent } from "@/lib/client-text";
 import { getJob, listJobsForUser } from "@/lib/jobs";
 import { listOrders } from "@/lib/orders";
 import type { ActionRequired, Job, JobAttachment, OrderProposal, StreamEvent, UiBlock } from "@/lib/types";
@@ -38,9 +39,9 @@ export function messageView(job: Job): MessageView {
     status: viewStatus(job),
     createdAt: job.createdAt,
     completedAt: job.status === "replied" ? job.reply?.receivedAt : undefined,
-    blocks: stream.flatMap((e) => (e.type === "block" ? [e.block] : [])),
-    actions: stream.flatMap((e) => (e.type === "action_required" ? [e.action] : [])),
-    error: job.status === "error" ? job.error : undefined,
+    blocks: stream.flatMap((e) => (e.type === "block" ? [clientBlock(e.block)] : [])),
+    actions: stream.flatMap((e) => (e.type === "action_required" ? [clientAction(e.action)] : [])),
+    error: job.status === "error" ? clientError(job.error) : undefined,
   };
 }
 
@@ -122,7 +123,7 @@ export function messageEventStream(request: Request, ownerUserId: string, messag
           }
           const fresh = (job.stream ?? []).filter((e) => e.seq > sent);
           for (const event of fresh) {
-            write(encode(event));
+            write(encode(clientStreamEvent(event)));
             sent = event.seq;
           }
           if (fresh.some((e) => e.type === "done" || e.type === "error")) break;

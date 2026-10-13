@@ -204,7 +204,7 @@ function Preview({ jobId, item }: { jobId: string; item: ArtifactItem }) {
       return (
         <div className="flex justify-center p-4">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={url} alt={displayPath(item.path)} className="max-w-full rounded-lg border bg-white" />
+          <img src={url} alt={baseName(item.path)} className="max-w-full rounded-lg border bg-white" />
         </div>
       );
     case "video":
@@ -261,7 +261,7 @@ export function FilesPanel() {
             <Button variant="ghost" size="icon-xs" aria-label="All files" onClick={() => select(undefined)}>
               <ArrowLeft />
             </Button>
-            <span className="min-w-0 flex-1 truncate font-mono text-xs">{displayPath(current.path)}</span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">{baseName(current.path)}</span>
             <a
               href={fileUrl(selected!.jobId, current.path)}
               download={baseName(current.path)}
@@ -298,7 +298,7 @@ export function FilesPanel() {
                   <FileRow
                     key={item.path}
                     icon={<KindIcon kind={item.kind} className="size-4 shrink-0 text-muted-foreground" />}
-                    name={displayPath(item.path)}
+                    name={baseName(item.path)}
                     meta={item.sizeBytes !== undefined ? formatBytes(item.sizeBytes) : undefined}
                     onClick={() => select({ jobId: job.id, path: item.path })}
                   />

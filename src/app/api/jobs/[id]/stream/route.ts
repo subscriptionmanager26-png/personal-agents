@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { clientTrace } from "@/lib/client-text";
 import { getAgentV1, openRunStream } from "@/lib/cursor-api";
 import { runtimeForUserId } from "@/lib/runtime";
 import { getOwnedJob } from "@/lib/job-access";
@@ -56,7 +57,7 @@ export async function GET(
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: TraceEvent, eventId?: string) =>
-        controller.enqueue(encoder.encode(encodeSse(event, eventId)));
+        controller.enqueue(encoder.encode(encodeSse(clientTrace(event), eventId)));
       const finish = () => {
         send({ type: "done" });
         controller.close();

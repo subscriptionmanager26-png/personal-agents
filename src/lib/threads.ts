@@ -1,4 +1,5 @@
 import { messageView } from "@/lib/agent-api";
+import { clientText } from "@/lib/client-text";
 import { listJobsForUser } from "@/lib/jobs";
 import type { ActionRequired, Job, JobAttachment, UiBlock } from "@/lib/types";
 
@@ -51,9 +52,12 @@ export async function listThreadJobs(ownerUserId: string, threadId: string) {
 
 export function chatMessage(job: Job): ChatMessage {
   const view = messageView(job);
-  const blocks = view.blocks.length || !job.reply?.message ? view.blocks : [{ kind: "markdown" as const, text: job.reply.message }];
+  const blocks =
+    view.blocks.length || !job.reply?.message
+      ? view.blocks
+      : [{ kind: "markdown" as const, text: clientText(job.reply.message) }];
   const steps = (job.stream ?? []).flatMap((e) =>
-    e.type === "status" && !GENERIC_STEPS.has(e.label) ? [e.label.replace(/…$/, "")] : [],
+    e.type === "status" && !GENERIC_STEPS.has(e.label) ? [clientText(e.label).replace(/…$/, "")] : [],
   );
   return {
     id: view.id,

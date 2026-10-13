@@ -19,9 +19,9 @@ export function mockReplyText(prompt: string) {
     `- Top position: NIFTYBEES (18%)`,
     `- 2 holdings are down more than 10% this month`,
     ``,
-    `The full report is in artifacts/report.md, with screenshots of each step.`,
+    `The full report is report.md in your Files, with screenshots of each step.`,
     ``,
-    `(Mock run: no Cursor API key is set for this workspace, so this trace is simulated. You asked: "${prompt.slice(0, 120)}")`,
+    `(Demo mode: this reply is simulated. You asked: "${prompt.slice(0, 120)}")`,
   ].join("\n");
 }
 

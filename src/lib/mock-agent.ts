@@ -135,7 +135,7 @@ export async function runMockAgent(user: PersonalUser, job: Job, workspace: Work
   };
   const text = job.prompt;
   const lower = text.toLowerCase();
-  const note = "\n\n_(Simulated agent: no Cursor API key is set for this workspace, so this reply is scripted around real tool calls.)_";
+  const note = "\n\n_(Demo mode: this reply is simulated around real tool calls.)_";
 
   if (job.attachments?.length) {
     const replies: string[] = [];
