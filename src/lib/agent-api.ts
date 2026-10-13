@@ -1,6 +1,6 @@
 import { getJob, listJobsForUser } from "@/lib/jobs";
 import { listOrders } from "@/lib/orders";
-import type { ActionRequired, Job, OrderProposal, StreamEvent, UiBlock } from "@/lib/types";
+import type { ActionRequired, Job, JobAttachment, OrderProposal, StreamEvent, UiBlock } from "@/lib/types";
 
 const THREAD_ID = /^[A-Za-z0-9._:-]{1,64}$/;
 
@@ -12,6 +12,7 @@ export type MessageView = {
   id: string;
   threadId: string;
   text: string;
+  attachments: JobAttachment[];
   status: "working" | "completed" | "failed";
   createdAt: string;
   completedAt?: string;
@@ -33,6 +34,7 @@ export function messageView(job: Job): MessageView {
     id: job.id,
     threadId: job.webThreadId ?? "main",
     text: job.prompt,
+    attachments: job.attachments ?? [],
     status: viewStatus(job),
     createdAt: job.createdAt,
     completedAt: job.status === "replied" ? job.reply?.receivedAt : undefined,

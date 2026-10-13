@@ -2,6 +2,7 @@ import { after } from "next/server";
 
 import { dispatchJob } from "@/lib/cursor";
 import { createJob, listJobsForUser, patchJob } from "@/lib/jobs";
+import { resolveAttachments } from "@/lib/files";
 import { ensurePersonalRepo } from "@/lib/github";
 import type { JobSource, PersonalUser } from "@/lib/types";
 import { canUseAgent } from "@/lib/workspaces";
@@ -24,8 +25,12 @@ export async function enqueueChat(input: {
   text: string;
   threadId?: string;
   source: Exclude<JobSource, "slack">;
+  /** Ids of the user's uploaded files. */
+  attachments?: unknown;
 }) {
-  const text = input.text.trim();
+  const resolved = await resolveAttachments(input.user.id, input.attachments);
+  if ("error" in resolved) throw new ChatRejected(resolved.error, "invalid");
+  const text = input.text.trim() || (resolved.files.length ? "Please look at the attached file(s)." : "");
   if (!text) throw new ChatRejected("Message required", "invalid");
   if (text.length > MAX_MESSAGE_CHARS) {
     throw new ChatRejected(`Message is longer than ${MAX_MESSAGE_CHARS} characters`, "invalid");
@@ -57,6 +62,7 @@ export async function enqueueChat(input: {
     source: input.source,
     webThreadId: input.threadId || "main",
     prompt: text,
+    attachments: resolved.files.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
   });
 
   after(async () => {
@@ -75,6 +81,17 @@ export async function enqueueChat(input: {
   return { job, user };
 }
 
-export async function enqueueWebChat(input: { user: PersonalUser; text: string; webThreadId?: string }) {
-  return enqueueChat({ user: input.user, text: input.text, threadId: input.webThreadId, source: "web" });
+export async function enqueueWebChat(input: {
+  user: PersonalUser;
+  text: string;
+  webThreadId?: string;
+  attachments?: string[];
+}) {
+  return enqueueChat({
+    user: input.user,
+    text: input.text,
+    threadId: input.webThreadId,
+    source: "web",
+    attachments: input.attachments,
+  });
 }

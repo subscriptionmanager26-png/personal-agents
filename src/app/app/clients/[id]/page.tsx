@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { AgentBlock } from "@/components/agent-blocks";
+import { AttachmentChips } from "@/components/composer";
 import { MemoryList } from "@/components/memory-list";
 import { messageView } from "@/lib/agent-api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -52,6 +53,7 @@ export default async function ClientDetailPage({ params }: { params: Promise<{ i
               {timeline.map((job) => (
                 <li key={job.id} className="space-y-2 text-sm">
                   <p className="text-xs text-muted-foreground">{new Date(job.createdAt).toLocaleString()}</p>
+                  <AttachmentChips attachments={job.attachments ?? []} />
                   <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-primary-foreground">
                     <p className="whitespace-pre-wrap">{job.prompt}</p>
                   </div>

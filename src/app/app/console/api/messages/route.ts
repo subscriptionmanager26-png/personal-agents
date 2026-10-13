@@ -17,11 +17,16 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json().catch(() => ({}))) as { user?: string; text?: string };
+  const body = (await request.json().catch(() => ({}))) as { user?: string; text?: string; attachments?: unknown };
   const resolved = await consoleUser(body.user);
   if ("response" in resolved) return resolved.response;
   try {
-    const { job } = await enqueueChat({ user: resolved.user, text: String(body.text ?? ""), source: "api" });
+    const { job } = await enqueueChat({
+      user: resolved.user,
+      text: String(body.text ?? ""),
+      source: "api",
+      attachments: body.attachments,
+    });
     return Response.json({ message: messageView(job) }, { status: 202 });
   } catch (error) {
     if (error instanceof ChatRejected) return apiError(error.code === "busy" ? 409 : 400, error.code, error.message);

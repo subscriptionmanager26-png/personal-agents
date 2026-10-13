@@ -4,9 +4,9 @@ import { Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { AgentBlock } from "@/components/agent-blocks";
+import { AttachmentChips, Composer } from "@/components/composer";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import type { MessageView, orderView } from "@/lib/agent-api";
 import type { ActionRequired, StreamEvent } from "@/lib/types";
 
@@ -83,7 +83,6 @@ export function ConsoleClient({ knownUsers }: { knownUsers: string[] }) {
   const [messages, setMessages] = useState<MessageView[]>([]);
   const [orders, setOrders] = useState<OrderView[]>([]);
   const [live, setLive] = useState<Live>();
-  const [text, setText] = useState("");
   const [error, setError] = useState("");
   const sourceRef = useRef<EventSource | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -139,23 +138,23 @@ export function ConsoleClient({ knownUsers }: { knownUsers: string[] }) {
     }
   };
 
-  const send = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!active || !text.trim()) return;
+  const send = async (text: string, attachments: string[]) => {
+    if (!active) return false;
     setError("");
     try {
       const { message } = await json<{ message: MessageView }>(
         await fetch("/app/console/api/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user: active, text }),
+          body: JSON.stringify({ user: active, text, attachments }),
         }),
       );
-      setText("");
       setMessages((m) => [...m, message]);
       listen(message.id);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     }
   };
 
@@ -221,6 +220,7 @@ export function ConsoleClient({ knownUsers }: { knownUsers: string[] }) {
               const failed = isLive ? events.find((e) => e.type === "error") : undefined;
               return (
                 <div key={m.id} className="space-y-2">
+                  <AttachmentChips attachments={m.attachments ?? []} />
                   <div className="ml-auto w-fit max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
                     {m.text}
                   </div>
@@ -262,24 +262,14 @@ export function ConsoleClient({ knownUsers }: { knownUsers: string[] }) {
             <div ref={bottomRef} />
           </div>
 
-          <form onSubmit={send} className="flex gap-2">
-            <Textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={2}
-              className="resize-none"
-              placeholder="Message the agent as this user…"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  e.currentTarget.form?.requestSubmit();
-                }
-              }}
-            />
-            <Button type="submit" disabled={Boolean(live)}>
-              Send
-            </Button>
-          </form>
+          <Composer
+            key={active}
+            uploadUrl={`/app/console/api/files?user=${encodeURIComponent(active)}`}
+            onSend={send}
+            disabled={Boolean(live)}
+            placeholder="Message the agent as this user, or attach a PDF, CSV or Excel file…"
+            hint="Uploads go through POST /api/v1/users/{id}/files in your app."
+          />
         </>
       )}
     </div>

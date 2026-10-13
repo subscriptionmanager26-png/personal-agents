@@ -1,5 +1,4 @@
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { AttachmentChips, Composer } from "@/components/composer";
 import { listJobsForUser } from "@/lib/jobs";
 import { requireAgentUser } from "@/lib/viewer";
 
@@ -63,7 +62,8 @@ export default async function ChatPage({
               job.status === "delivering";
             return (
               <div key={job.id} className="space-y-2">
-                <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
+                <AttachmentChips attachments={job.attachments ?? []} />
+                <div className="ml-auto w-fit max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
                   <p className="whitespace-pre-wrap">{job.prompt}</p>
                 </div>
                 {active && !job.reply?.message && !job.error ? (
@@ -85,23 +85,16 @@ export default async function ChatPage({
         )}
       </div>
 
-      <form action="/app/chat/send" method="post" className="space-y-3">
-        <Textarea
-          name="text"
-          required
-          rows={3}
-          placeholder="Message your personal agent…"
-          className="resize-none"
-        />
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
-            {pending
-              ? "Agent is working — this page refreshes automatically."
-              : "Your agent uses its memory, your connected accounts and its skills."}
-          </p>
-          <Button type="submit">Send</Button>
-        </div>
-      </form>
+      <Composer
+        action="/app/chat/send"
+        uploadUrl="/app/files"
+        placeholder="Message your personal agent, or attach a PDF, CSV or Excel file…"
+        hint={
+          pending
+            ? "Agent is working — this page refreshes automatically."
+            : "PDF, CSV and Excel up to 4 MB. Drop files here."
+        }
+      />
     </div>
   );
 }

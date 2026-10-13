@@ -23,10 +23,11 @@ export async function POST(request: Request) {
 
   const form = await request.formData();
   const text = String(form.get("text") || "").trim();
-  if (!text) redirect("/app/chat");
+  const attachments = form.getAll("attachments").map(String).filter(Boolean);
+  if (!text && !attachments.length) redirect("/app/chat");
 
   try {
-    const { job } = await enqueueWebChat({ user, text });
+    const { job } = await enqueueWebChat({ user, text, attachments });
     redirect(`/app/chat?job=${encodeURIComponent(job.id)}`);
   } catch (error) {
     if (isNextRedirect(error)) throw error;

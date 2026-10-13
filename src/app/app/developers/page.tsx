@@ -22,7 +22,10 @@ const ENDPOINTS: [string, string, string][] = [
   ["PUT", "/api/v1/users/{userId}", "Create or update a user's agent. Body: { name?, email? }. 201 when created."],
   ["GET", "/api/v1/users/{userId}", "The user and whether their agent is active."],
   ["DELETE", "/api/v1/users/{userId}", "Disable the agent (history and memory are kept; PUT re-enables)."],
-  ["POST", "/api/v1/users/{userId}/messages", "Send { text, threadId? }. 202 with the message and its events URL. 409 agent_busy while a reply is in progress."],
+  ["POST", "/api/v1/users/{userId}/files", "Upload a PDF, CSV or Excel file (multipart field `file`, up to 4 MB). 201 with { file }; status needs_password for locked PDFs."],
+  ["POST", "/api/v1/users/{userId}/files/{fileId}/unlock", "Open a password-protected PDF (e.g. a CAS statement): { password }. The password is used once, never stored."],
+  ["GET", "/api/v1/users/{userId}/files", "The user's files, newest first. GET /files/{fileId} for one; DELETE removes it."],
+  ["POST", "/api/v1/users/{userId}/messages", "Send { text, threadId?, attachments?: [fileId…] } (up to 5 files; text may be empty with files). 202 with the message and its events URL. 409 agent_busy while a reply is in progress."],
   ["GET", "/api/v1/users/{userId}/messages/{id}/events", "Server-sent events for that message (see below). Resume with Last-Event-ID or ?after=<seq>."],
   ["GET", "/api/v1/users/{userId}/messages/{id}", "The message with all blocks and actions, for redrawing."],
   ["GET", "/api/v1/users/{userId}/messages?threadId=&limit=", "History, newest first."],
@@ -213,6 +216,10 @@ export default async function DevelopersPage({
 curl -X POST ${origin}/api/v1/users/user_8812/messages \\
   -H "Authorization: Bearer $PA_KEY" -H "Content-Type: application/json" \\
   -d '{"text":"Review my portfolio"}'
+
+curl -X POST ${origin}/api/v1/users/user_8812/files \\
+  -H "Authorization: Bearer $PA_KEY" -F "file=@holdings.xlsx"
+# then send { "text": "Review this", "attachments": ["<file.id>"] }
 
 curl -N ${origin}/api/v1/users/user_8812/messages/<messageId>/events \\
   -H "Authorization: Bearer $PA_KEY"`}</pre>

@@ -1,6 +1,7 @@
 import { callAgentTool } from "@/lib/agent-mcp";
 import { createCompanyUserToken, signingSecretFor } from "@/lib/company";
 import { mcpCallTool, mcpListTools } from "@/lib/mcp-client";
+import type { ToolResult } from "@/lib/mcp-server";
 import { mockReplyText } from "@/lib/mock-trace";
 import type { Job, PersonalUser, Workspace } from "@/lib/types";
 
@@ -28,6 +29,98 @@ async function findTools(workspace: Workspace | undefined, user: PersonalUser) {
   return tools;
 }
 
+type Ui = (name: string, args: Record<string, unknown>) => Promise<ToolResult | undefined>;
+
+function toolJson(result: ToolResult | undefined): Record<string, unknown> | undefined {
+  try {
+    return result && !result.isError ? JSON.parse(result.content[0]?.text ?? "") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const num = (v: unknown) => {
+  if (typeof v === "number") return v;
+  const n = Number(String(v ?? "").replace(/[₹,\s]/g, ""));
+  return Number.isFinite(n) ? n : NaN;
+};
+
+/** Reads one attachment through read_file and shows what a real agent would. */
+async function reviewFile(ui: Ui, fileId: string, name: string) {
+  const data = toolJson(await ui("read_file", { file_id: fileId, limit: 200 }));
+  if (!data) return `I couldn't read ${name}.`;
+
+  if (Array.isArray(data.pages)) {
+    const pages = data.pages as { page: number; text: string }[];
+    const first = pages.map((p) => p.text).join("\n").replace(/\s+/g, " ").trim();
+    const isCas = /consolidated account statement|CAS/i.test(first);
+    await ui("show_card", {
+      title: name,
+      tone: "info",
+      body: first ? `${first.slice(0, 280)}${first.length > 280 ? "…" : ""}` : "This PDF has no text layer; it is probably a scan.",
+      fields: [
+        { label: "Pages", value: String(data.total_pages) },
+        { label: "Looks like", value: isCas ? "Mutual fund CAS" : "Document" },
+      ],
+    });
+    return first
+      ? `I read ${name} (${data.total_pages} pages).${isCas ? " It looks like a consolidated account statement; ask me to review your mutual fund holdings from it." : ""}`
+      : `${name} has no readable text. If it is a scan, please upload the original PDF from the issuer.`;
+  }
+
+  const header = ((data.header as unknown[]) ?? []).map((h) => String(h ?? ""));
+  const rows = (data.rows as unknown[][]) ?? [];
+  const col = (re: RegExp) => header.findIndex((h) => re.test(h));
+  const symbolCol = col(/symbol|scrip|instrument|stock|security|scheme|name/i);
+  const qtyCol = col(/qty|quantity|units|shares/i);
+  const priceCol = col(/ltp|last|price|nav|close|rate/i);
+  const valueCol = col(/value|amount|market|current/i);
+
+  const holdings =
+    symbolCol >= 0 && (valueCol >= 0 || (qtyCol >= 0 && priceCol >= 0))
+      ? rows
+          .map((r) => ({
+            symbol: String(r[symbolCol] ?? "").slice(0, 40),
+            value: valueCol >= 0 ? num(r[valueCol]) : num(r[qtyCol]) * num(r[priceCol]),
+          }))
+          .filter((h) => h.symbol && Number.isFinite(h.value) && h.value > 0)
+      : [];
+
+  if (holdings.length) {
+    const total = holdings.reduce((s, h) => s + h.value, 0);
+    const ranked = holdings
+      .map((h) => ({ ...h, value: Math.round(h.value), weight: Math.round((h.value / total) * 1000) / 10 }))
+      .sort((a, b) => b.value - a.value);
+    await ui("show_card", {
+      title: `${name}: ${ranked.length} holdings`,
+      tone: ranked[0].weight > 20 ? "warning" : "info",
+      fields: [
+        { label: "Total value", value: inr(total) },
+        { label: "Largest", value: `${ranked[0].symbol} (${ranked[0].weight}%)` },
+        { label: "Rows read", value: `${rows.length} of ${data.total_rows}` },
+      ],
+    });
+    await ui("show_chart", {
+      title: "Allocation",
+      chart_type: "bar",
+      x_key: "symbol",
+      series: [{ key: "weight", label: "Weight %" }],
+      data: ranked.slice(0, 15),
+    });
+    return `${name} holds ${ranked.length} positions worth ${inr(total)}. ${
+      ranked[0].weight > 20 ? `${ranked[0].symbol} is ${ranked[0].weight}% of it, above a 20% single-position guideline.` : "No position is above 20%."
+    }`;
+  }
+
+  const shown = header.slice(0, 6);
+  await ui("show_table", {
+    title: `${name}${data.sheet && (data.sheets as string[]).length > 1 ? ` · ${data.sheet}` : ""}`,
+    columns: shown.map((h, i) => ({ key: `c${i}`, label: h || `Column ${i + 1}` })),
+    rows: rows.slice(0, 10).map((r) => Object.fromEntries(shown.map((_, i) => [`c${i}`, r[i] ?? ""]))),
+  });
+  return `${name} has ${data.total_rows} rows and ${header.length} columns (${header.slice(0, 6).join(", ")}${header.length > 6 ? ", …" : ""}). Tell me what you'd like to know from it.`;
+}
+
 export async function runMockAgent(user: PersonalUser, job: Job, workspace: Workspace | undefined) {
   const caller = { ownerUserId: user.id, jobId: job.id };
   const ui = (name: string, args: Record<string, unknown>) => callAgentTool(caller, name, args);
@@ -43,6 +136,15 @@ export async function runMockAgent(user: PersonalUser, job: Job, workspace: Work
   const text = job.prompt;
   const lower = text.toLowerCase();
   const note = "\n\n_(Simulated agent: CURSOR_API_KEY is not set, so this reply is scripted around real tool calls.)_";
+
+  if (job.attachments?.length) {
+    const replies: string[] = [];
+    for (const a of job.attachments) {
+      await status(`Reading ${a.name}`);
+      replies.push(await reviewFile(ui, a.id, a.name));
+    }
+    return `${replies.join("\n\n")}${note}`;
+  }
 
   const trade = text.match(/\b(buy|sell)\s+(?:(\d+)\s+)?(?:shares?\s+(?:of\s+)?)?([A-Za-z&]{2,20})\b/i);
   if (trade && tools.has("get_quote")) {

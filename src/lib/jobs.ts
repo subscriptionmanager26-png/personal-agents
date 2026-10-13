@@ -1,6 +1,7 @@
 import { randomId } from "@/lib/crypto";
 import { getStore, updateStore } from "@/lib/store";
 import type {
+  JobAttachment,
   Job,
   JobSource,
   JobStatus,
@@ -58,6 +59,7 @@ export async function createJob(input: {
   ownerUserId: string;
   source?: JobSource;
   prompt: string;
+  attachments?: JobAttachment[];
   threadContext?: string;
   webThreadId?: string;
   slackTeamId?: string;
@@ -84,6 +86,7 @@ export async function createJob(input: {
     slackMessageTs: input.slackMessageTs,
     webThreadId,
     prompt: input.prompt,
+    attachments: input.attachments?.length ? input.attachments : undefined,
     threadContext: input.threadContext,
     status: "queued",
     events: [{ at: now, type: "created", detail: "Job created" }],

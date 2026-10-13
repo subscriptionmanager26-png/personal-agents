@@ -226,6 +226,8 @@ export type Job = {
   /** Web chat thread key when source === "web". */
   webThreadId?: string;
   prompt: string;
+  /** The client's uploaded files attached to this message, as they were when sent. */
+  attachments?: JobAttachment[];
   threadContext?: string;
   status: JobStatus;
   cursorAgentId?: string;
@@ -282,8 +284,35 @@ export type AuditEvent = {
   detail: string;
 };
 
+export type FileKind = "pdf" | "csv" | "xlsx";
+
+export type JobAttachment = { id: string; name: string; kind: FileKind; size: number };
+
+export type SheetSummary = { name: string; rows: number; columns: number; header: string[] };
+
+/** A file a client uploaded. Bytes and extracted content live in file storage, not here. */
+export type UploadedFile = {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  kind: FileKind;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  /** `needs_password`: an encrypted PDF the client has not unlocked yet. */
+  status: "ready" | "needs_password" | "failed";
+  error?: string;
+  pages?: number;
+  sheets?: SheetSummary[];
+  /** Characters of extracted text (PDF) or cells (tables). */
+  extractedSize?: number;
+  truncated?: boolean;
+  createdAt: string;
+};
+
 export type StoreData = {
   users: Record<string, PersonalUser>;
+  files: Record<string, UploadedFile[]>;
   workspaces: Record<string, Workspace>;
   memories: Record<string, MemoryEntry[]>;
   vaultItems: Record<string, VaultItem[]>;

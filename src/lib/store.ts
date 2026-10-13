@@ -18,6 +18,7 @@ function localPath() {
 
 const emptyStore = (): StoreData => ({
   users: {},
+  files: {},
   workspaces: {},
   memories: {},
   vaultItems: {},
