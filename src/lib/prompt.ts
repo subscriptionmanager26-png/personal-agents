@@ -58,6 +58,8 @@ function skillsSection(workspace: Workspace | undefined, inRepo: boolean) {
 export type PromptRuntime = {
   /** Our personal-agent MCP (memory + app UI tools) is attached to this run. */
   agentTools: boolean;
+  /** The personal-vault tools can run in this agent's VM (they need the client's repo). Default true. */
+  vaultTools?: boolean;
   /** Workspace skills are present as files in the repo (otherwise they are inlined). */
   skillsInRepo: boolean;
   /** Names of the company's MCP servers attached to this run. */
@@ -221,11 +223,15 @@ ${orders}
 ## Connected accounts
 Saved logins (model-blind: metadata only, secrets never appear here or in tool results):
 ${vaultList}
-Use the **personal-vault** MCP tools for these:
+${
+  runtime.vaultTools === false
+    ? "Saved logins cannot be used in this run. If a task needs one, tell the client it is not available yet."
+    : `Use the **personal-vault** MCP tools for these:
 - vault_list → refresh handles
 - vault_fill({ handle, url, username_selector?, password_selector?, submit_selector? }) fills a login form; returns only { filled_fields, origin, success }.
 - vault_http({ handle, url, method, inject? }) makes an authenticated HTTP call; the response is scrubbed.
-If vault_fill fails with origin_mismatch, stop — do not try to bypass.
+If vault_fill fails with origin_mismatch, stop — do not try to bypass.`
+}
 
 MCP connections:
 ${connectionsList}

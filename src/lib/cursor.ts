@@ -38,7 +38,13 @@ async function failJob(job: Job, userId: string, detail: string) {
   await patchJob(job.id, userId, { status: "error", error: detail, event: { type: "error", detail } });
 }
 
-async function buildMcpServers(user: PersonalUser, job: Job, workspace: Workspace | undefined, rt: AgentRuntime) {
+async function buildMcpServers(
+  user: PersonalUser,
+  job: Job,
+  workspace: Workspace | undefined,
+  rt: AgentRuntime,
+  withRepo: boolean,
+) {
   const servers: McpServerDef[] = [];
   // Cursor's backend must be able to reach our agent MCP endpoint.
   const base = rt.agentPublicUrl || undefined;
@@ -54,8 +60,9 @@ async function buildMcpServers(user: PersonalUser, job: Job, workspace: Workspac
     s.type === "stdio" ? s : { ...s, url: reachableServerUrl(s.url, base) },
   );
   servers.push(...company);
-  if (base && (await listVaultLabels(user.id)).length) {
-    // vault_fill must type into the VM's browser, so this one runs inside the VM.
+  // vault_fill must type into the VM's browser, so it runs inside the VM from the repo's copy.
+  const vaultTools = Boolean(withRepo && base);
+  if (withRepo && base && (await listVaultLabels(user.id)).length) {
     servers.push({
       name: "personal-vault",
       type: "stdio",
@@ -73,6 +80,7 @@ async function buildMcpServers(user: PersonalUser, job: Job, workspace: Workspac
   return {
     servers,
     agentTools: Boolean(base),
+    vaultTools,
     companyServers: company.map((c) => c.name),
     connections: connections.map((c) => c.name),
   };
@@ -113,29 +121,34 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     return { user: current, agentId: mockId, mock: true };
   }
 
-  let current = await ensurePersonalRepo(latest);
-  if (!current.agentRepository) {
-    await failJob(job, current.id, current.provisionError || "Personal repo missing");
-    throw new Error(current.provisionError || "Personal repo missing");
-  }
-
+  // Without a GitHub token each agent starts with no repo; instructions and skills travel in the prompt.
+  const withRepo = Boolean(rt.githubToken);
+  let current = latest;
   let skillsInRepo = false;
-  try {
-    skillsInRepo = Boolean(await syncWorkspaceSkills(current, workspace));
-    current = (await getUser(current.id)) ?? current;
-  } catch {
-    // fall back to inlining the skills in the prompt
+  if (withRepo) {
+    current = await ensurePersonalRepo(latest);
+    if (!current.agentRepository) {
+      await failJob(job, current.id, current.provisionError || "Personal repo missing");
+      throw new Error(current.provisionError || "Personal repo missing");
+    }
+    try {
+      skillsInRepo = Boolean(await syncWorkspaceSkills(current, workspace));
+      current = (await getUser(current.id)) ?? current;
+    } catch {
+      // fall back to inlining the skills in the prompt
+    }
   }
-  const hash = skillsHash(workspace);
-  const mcp = await buildMcpServers(current, job, workspace, rt);
+  const hash = `${skillsHash(workspace)}:${withRepo ? "repo" : "no-repo"}`;
+  const mcp = await buildMcpServers(current, job, workspace, rt, withRepo);
   const promptText = await buildPersonalAgentPrompt(current, job, {
     agentTools: mcp.agentTools,
+    vaultTools: mcp.vaultTools,
     skillsInRepo,
     companyServers: mcp.companyServers,
     connections: mcp.connections,
   });
 
-  // One standing agent per client; replace it only when the owner's skills changed,
+  // One standing agent per client; replace it only when the owner's skills or the repo mode changed,
   // because a running agent keeps the repo checkout it started with.
   if (current.cursorAgentId && current.cursorAgentSkillsHash === hash) {
     const run = await createRun(rt.cursorApiKey, current.cursorAgentId, promptText, mcp.servers);
@@ -158,7 +171,12 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     // Agent expired or was removed: start a fresh one below. Memory and recent chat carry over.
   }
 
-  const created = await createAgent(rt.cursorApiKey, current, promptText, mcp.servers);
+  const created = await createAgent(
+    rt.cursorApiKey,
+    withRepo ? current : undefined,
+    promptText,
+    mcp.servers,
+  );
   current =
     (await updateUser(current.id, { cursorAgentId: created.agentId, cursorAgentSkillsHash: hash })) ?? current;
   await patchJob(job.id, current.id, {
@@ -172,25 +190,38 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   return { user: current, agentId: created.agentId, mock: false };
 }
 
-async function createAgent(key: string, user: PersonalUser, promptText: string, mcpServers: McpServerDef[]) {
+/** `repoUser` set: the agent works in that user's repo. Unset: a no-repo agent. */
+async function createAgent(
+  key: string,
+  repoUser: PersonalUser | undefined,
+  promptText: string,
+  mcpServers: McpServerDef[],
+) {
   const cfg = getConfig();
-  const repository = user.agentRepository!;
+  const repository = repoUser?.agentRepository;
 
   const v1 = await cursorPost(key, "/v1/agents", {
     prompt: { text: promptText },
-    repos: [{ url: repository, startingRef: user.agentRef || "main" }],
-    autoCreatePR: false,
-    skipReviewerRequest: true,
+    ...(repository
+      ? {
+          repos: [{ url: repository, startingRef: repoUser.agentRef || "main" }],
+          autoCreatePR: false,
+          skipReviewerRequest: true,
+        }
+      : {}),
     mcpServers,
   });
   const v1Id = extractAgentId((v1.body as { agent?: unknown })?.agent) || extractAgentId(v1.body);
   if (v1.ok && v1Id) {
     return { agentId: v1Id, runId: extractRunId(v1.body), status: v1.status, body: v1.body };
   }
+  if (!repository) {
+    throw new Error(`Cursor create failed (HTTP ${v1.status}): ${JSON.stringify(v1.body).slice(0, 400)}`);
+  }
 
   const v0Body: Record<string, unknown> = {
     prompt: { text: promptText },
-    source: { repository, ref: user.agentRef || "main" },
+    source: { repository, ref: repoUser.agentRef || "main" },
     target: { autoCreatePr: false },
   };
   if (cfg.cursorStatusWebhookUrl && cfg.cursorStatusWebhookSecret) {

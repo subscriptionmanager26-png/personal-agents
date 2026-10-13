@@ -27,11 +27,11 @@ function ClearButton({ what }: { what: "cursor" | "github" }) {
   );
 }
 
-/** Where an owner connects real Cursor agents: their Cursor key, a GitHub token for client repos, and a public URL. */
+/** Where an owner connects real Cursor agents: their Cursor key, an optional GitHub token for client repos, and a public URL. */
 export function RuntimeCard({ workspace, saved, port }: { workspace: Workspace; saved: boolean; port: string }) {
   const r = workspace.runtime ?? {};
   const rt = runtimeFor(workspace);
-  const live = Boolean(rt.cursorApiKey && rt.githubToken);
+  const live = Boolean(rt.cursorApiKey);
 
   return (
     <Card id="runtime" className="scroll-mt-16">
@@ -43,13 +43,12 @@ export function RuntimeCard({ workspace, saved, port }: { workspace: Workspace; 
               live ? "bg-success/15 text-success" : "bg-muted text-muted-foreground"
             }`}
           >
-            {live ? "Real Cursor agents" : rt.cursorApiKey ? "Needs a GitHub token" : "Simulated"}
+            {live ? "Real Cursor agents" : "Simulated"}
           </span>
         </CardTitle>
         <CardDescription>
-          Each of your users gets a Cursor cloud agent working in its own private GitHub repo. Keys are encrypted and
-          only used for this workspace&apos;s agents. Without a Cursor key, replies are simulated locally; with one,
-          messages fail until the GitHub token is set too.
+          Each of your users gets their own Cursor cloud agent. Keys are encrypted and only used for this
+          workspace&apos;s agents. Without a Cursor key, replies are simulated locally.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -68,21 +67,23 @@ export function RuntimeCard({ workspace, saved, port }: { workspace: Workspace; 
             <a href="https://cursor.com/dashboard/integrations" target="_blank" rel="noreferrer" className="text-info underline-offset-4 hover:underline">
               Cursor → Dashboard → Integrations
             </a>
-            . The Cursor account needs GitHub connected with access to the repos below (all repositories, or the org).
+            . This is all you need for real agents.
           </p>
         </div>
 
         <div className="space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <Label>GitHub token</Label>
+            <Label>GitHub token (optional)</Label>
             {r.githubTokenEnc && <ClearButton what="github" />}
           </div>
           <Status ok={Boolean(rt.githubToken)}>
-            {r.githubTokenLabel ?? (rt.githubToken ? "Using the server's GITHUB_TOKEN" : "Not set")}
+            {r.githubTokenLabel ??
+              (rt.githubToken ? "Using the server's GITHUB_TOKEN" : "Not set: agents run without a repo")}
           </Status>
           <p className="text-xs text-muted-foreground">
-            Used to create one private repo per user (<code>agent-…</code>) and sync your skills into it. A classic token
-            with the <code>repo</code> scope, or a fine-grained token with Administration and Contents read/write.
+            Gives each user a private repo (<code>agent-…</code>) with your skills as files, and lets agents fill saved
+            logins in their browser. Cursor&apos;s GitHub app needs access to those repos. A classic token with the{" "}
+            <code>repo</code> scope, or a fine-grained token with Administration and Contents read/write.
           </p>
         </div>
 
@@ -99,7 +100,7 @@ export function RuntimeCard({ workspace, saved, port }: { workspace: Workspace; 
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="rt-github">GitHub token</Label>
+              <Label htmlFor="rt-github">GitHub token (optional)</Label>
               <Input
                 id="rt-github"
                 name="githubToken"

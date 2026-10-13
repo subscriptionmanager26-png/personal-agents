@@ -118,8 +118,13 @@ export async function syncVaultRuntimeFiles(user: PersonalUser): Promise<Persona
   return (await updateUser(user.id, { runtimeSyncedHash: hash })) ?? user;
 }
 
-/** Ensure the user has a personal agent repository. Uses template when set. */
+/**
+ * Ensure the user has a personal agent repository. Uses template when set.
+ * A no-op without a GitHub token: agents then run without a repo.
+ */
 export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUser> {
+  const creds = await credsFor(user);
+  if (!creds.token) return user;
   if (user.agentRepository) {
     try {
       return await syncVaultRuntimeFiles(user);
@@ -127,14 +132,6 @@ export async function ensurePersonalRepo(user: PersonalUser): Promise<PersonalUs
       // best-effort; agent may still work without latest vault MCP
       return user;
     }
-  }
-  const creds = await credsFor(user);
-  if (!creds.token) {
-    const updated = await updateUser(user.id, {
-      provisionError:
-        "GitHub is not configured. The workspace owner can add a GitHub token under Developers → Agent runtime.",
-    });
-    return updated ?? user;
   }
 
   let ownerInfo;
