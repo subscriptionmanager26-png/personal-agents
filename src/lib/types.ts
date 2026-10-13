@@ -16,6 +16,7 @@ export type UiBlock =
   | {
       kind: "table";
       title?: string;
+      /** percent cells are fractions: 0.125 renders as 12.5%. */
       columns: { key: string; label: string; format?: "text" | "number" | "currency" | "percent" }[];
       rows: Record<string, string | number | null>[];
     }

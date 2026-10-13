@@ -8,7 +8,7 @@ function formatCell(value: string | number | null, format?: string) {
   if (value === null || value === undefined || value === "") return "—";
   if (typeof value !== "number") return value;
   if (format === "currency") return `₹${Math.round(value).toLocaleString("en-IN")}`;
-  if (format === "percent") return `${value}%`;
+  if (format === "percent") return `${(value * 100).toLocaleString("en-IN", { maximumFractionDigits: 2 })}%`;
   return value.toLocaleString("en-IN");
 }
 

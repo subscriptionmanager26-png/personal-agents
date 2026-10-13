@@ -250,7 +250,7 @@ export async function runMockAgent(user: PersonalUser, job: Job, workspace: Work
         { key: "weight", label: "Weight", format: "percent" },
         { key: "pnl", label: "P&L", format: "currency" },
       ],
-      rows,
+      rows: rows.map((r) => ({ ...r, weight: r.weight / 100 })),
     });
     await ui("show_chart", {
       title: "Allocation",

@@ -82,7 +82,7 @@ const UI_TOOLS: McpTool[] = [
   {
     name: "show_table",
     description:
-      "Show the client a table (holdings, metrics, comparisons). Prefer this over markdown tables. Rows are objects keyed by column key.",
+      "Show the client a table (holdings, metrics, comparisons). Prefer this over markdown tables. Rows are objects keyed by column key. Cells in a percent column are fractions: 0.125 shows as 12.5%.",
     inputSchema: {
       type: "object",
       required: ["columns", "rows"],
@@ -97,7 +97,11 @@ const UI_TOOLS: McpTool[] = [
             properties: {
               key: { type: "string" },
               label: { type: "string" },
-              format: { type: "string", enum: ["text", "number", "currency", "percent"] },
+              format: {
+                type: "string",
+                enum: ["text", "number", "currency", "percent"],
+                description: "percent: cell values are fractions (0.125 = 12.5%).",
+              },
             },
           },
         },
