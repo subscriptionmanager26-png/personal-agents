@@ -1,8 +1,9 @@
 "use client";
 
-import { ArrowUp, FileSpreadsheet, FileText, Loader2, Lock, Paperclip, X } from "lucide-react";
+import { ArrowUp, FileSpreadsheet, FileText, Loader2, Lock, Mic, Paperclip, Square, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 
+import { useDictation } from "@/components/use-dictation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -21,6 +22,10 @@ type Item = {
 
 function withParam(url: string, key: string, value: string) {
   return `${url}${url.includes("?") ? "&" : "?"}${key}=${encodeURIComponent(value)}`;
+}
+
+function joinSpeech(text: string, phrase: string) {
+  return !text || /\s$/.test(text) ? text + phrase : `${text} ${phrase}`;
 }
 
 async function errorMessage(res: Response) {
@@ -61,6 +66,8 @@ export function Composer({
   const [sending, setSending] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  const dictation = useDictation((phrase) => setText((cur) => joinSpeech(cur, phrase)));
+  const shown = dictation.interim ? joinSpeech(text, dictation.interim) : text;
 
   const patch = (key: string, next: Partial<Item>) =>
     setItems((cur) => cur.map((i) => (i.key === key ? { ...i, ...next } : i)));
@@ -117,6 +124,7 @@ export function Composer({
   const canSend = !disabled && !sending && !busy && (text.trim().length > 0 || ready.length > 0);
 
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
+    dictation.stop();
     if (!canSend) {
       e.preventDefault();
       return;
@@ -252,11 +260,12 @@ export function Composer({
       <Textarea
         ref={input}
         name="text"
-        value={text}
+        value={shown}
         onChange={(e) => setText(e.target.value)}
+        readOnly={dictation.listening}
         rows={1}
         autoFocus={autoFocus}
-        placeholder={placeholder}
+        placeholder={dictation.listening ? "Listening…" : placeholder}
         className="max-h-60 min-h-14 resize-none border-0 bg-transparent px-4 pt-3.5 text-[15px] shadow-none focus-visible:ring-0 md:text-[15px] dark:bg-transparent"
         onPaste={(e) => {
           if (e.clipboardData.files.length) {
@@ -301,11 +310,42 @@ export function Composer({
           </TooltipTrigger>
           <TooltipContent>Attach PDF, CSV or Excel (up to {formatBytes(MAX_FILE_BYTES)})</TooltipContent>
         </Tooltip>
-        <Button type="submit" size="icon-sm" className="rounded-full" disabled={!canSend} aria-label="Send">
-          {sending ? <Loader2 className="animate-spin" /> : <ArrowUp />}
-        </Button>
+        <div className="flex items-center gap-1">
+          {dictation.supported && (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    className={`rounded-full ${
+                      dictation.listening
+                        ? "bg-destructive/15 text-destructive hover:bg-destructive/25 hover:text-destructive"
+                        : "text-muted-foreground"
+                    }`}
+                    aria-label={dictation.listening ? "Stop dictation" : "Dictate"}
+                    aria-pressed={dictation.listening}
+                    disabled={disabled}
+                    onClick={() => {
+                      if (dictation.listening) dictation.stop();
+                      else dictation.start();
+                    }}
+                  />
+                }
+              >
+                {dictation.listening ? <Square className="fill-current" /> : <Mic />}
+              </TooltipTrigger>
+              <TooltipContent>{dictation.listening ? "Stop dictation" : "Dictate"}</TooltipContent>
+            </Tooltip>
+          )}
+          <Button type="submit" size="icon-sm" className="rounded-full" disabled={!canSend} aria-label="Send">
+            {sending ? <Loader2 className="animate-spin" /> : <ArrowUp />}
+          </Button>
+        </div>
       </div>
     </form>
+      {dictation.error && <div className="px-1 text-xs text-destructive">{dictation.error}</div>}
       {hint && <div className="px-1 text-center text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
