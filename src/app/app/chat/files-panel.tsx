@@ -22,6 +22,7 @@ import type { JobAttachment } from "@/lib/types";
 
 const ROOT = "artifacts/";
 
+/** Messages in a thread, oldest first. */
 export type FilesJob = { id: string; title: string; active: boolean };
 type Selected = { jobId: string; path: string };
 
@@ -61,16 +62,29 @@ function KindIcon({ kind, className }: { kind: ArtifactItem["kind"]; className?:
 }
 
 /** Agent-created files for every message in a thread, shared by the chips in chat and the side panel. */
-export function FilesProvider({ jobs, uploads, children }: { jobs: FilesJob[]; uploads: JobAttachment[]; children: ReactNode }) {
-  const [items, setItems] = useState<Record<string, ArtifactItem[]>>({});
+export function FilesProvider({
+  jobs,
+  uploads: attached,
+  children,
+}: {
+  jobs: FilesJob[];
+  uploads: JobAttachment[];
+  children: ReactNode;
+}) {
+  const [listed, setItems] = useState<Record<string, ArtifactItem[]>>({});
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Selected>();
 
-  const load = useCallback(async (jobId: string) => {
+  const load = useCallback(async function fetchListing(jobId: string, attempt = 0) {
     try {
       const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/artifacts`, { cache: "no-store" });
       if (!res.ok) return;
-      const body = (await res.json()) as { items?: ArtifactItem[] };
+      const body = (await res.json()) as { items?: ArtifactItem[]; error?: string };
+      if (body.error) {
+        // The upstream listing failed: keep what we had and try again shortly.
+        if (attempt < 2) window.setTimeout(() => void fetchListing(jobId, attempt + 1), 3000 * (attempt + 1));
+        return;
+      }
       setItems((cur) => ({ ...cur, [jobId]: body.items ?? [] }));
     } catch {
       // keep the previous listing
@@ -90,6 +104,19 @@ export function FilesProvider({ jobs, uploads, children }: { jobs: FilesJob[]; u
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, load]);
 
+  // A file the agent rewrote later belongs to the latest message that wrote it.
+  const items = useMemo(() => {
+    const seen = new Set<string>();
+    const out: Record<string, ArtifactItem[]> = {};
+    for (const job of [...jobs].reverse()) {
+      out[job.id] = (listed[job.id] ?? []).filter((i) => !seen.has(i.path) && seen.add(i.path));
+    }
+    return out;
+  }, [jobs, listed]);
+  const uploads = useMemo(
+    () => [...new Map(attached.map((u) => [`${u.name}:${u.size}`, u])).values()],
+    [attached],
+  );
   const total = useMemo(
     () => Object.values(items).reduce((n, list) => n + list.length, 0) + uploads.length,
     [items, uploads.length],
