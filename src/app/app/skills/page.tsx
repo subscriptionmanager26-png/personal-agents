@@ -85,7 +85,7 @@ export default async function SkillsPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Skills</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Skills</h1>
         <p className="mt-1 text-muted-foreground">
           {isOwner
             ? "Your playbooks. Every client's agent gets all of these. Edits reach each agent on its next message."

@@ -1,12 +1,16 @@
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Suspense } from "react";
 
-import { AppNav, type NavLink } from "@/components/app-nav";
+import { AppFrame } from "@/components/app-frame";
+import { AppSidebar, type SidebarLink } from "@/components/app-sidebar";
 import { QueryError } from "@/components/query-error";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { isOperator } from "@/lib/config";
+import { listChatThreads, type ChatThread } from "@/lib/threads";
 import { getViewer } from "@/lib/viewer";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +19,7 @@ function CreateWorkspace() {
   return (
     <div className="mx-auto max-w-lg space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Set up your business</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Set up your business</h1>
         <p className="mt-1 text-muted-foreground">
           Your clients will sign up through your link, and you approve each one before their
           personal agent starts.
@@ -43,7 +47,7 @@ function CreateWorkspace() {
 function Waiting({ workspaceName, suspended }: { workspaceName?: string; suspended: boolean }) {
   return (
     <div className="mx-auto max-w-lg space-y-2">
-      <h1 className="font-heading text-3xl tracking-tight">
+      <h1 className="text-2xl font-semibold tracking-tight">
         {suspended ? "Access paused" : "Waiting for approval"}
       </h1>
       <p className="text-muted-foreground">
@@ -61,36 +65,43 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const { user, workspace, isOwner } = viewer;
 
   let body = children;
-  let links: NavLink[] = [];
+  let links: SidebarLink[] = [];
+  let footerLinks: SidebarLink[] = [];
+  let threads: ChatThread[] | undefined;
   if (!workspace) {
     body = <CreateWorkspace />;
   } else if (!isOwner && user.membershipStatus !== "active") {
     body = <Waiting workspaceName={workspace.name} suspended={user.membershipStatus === "suspended"} />;
+  } else if (isOwner) {
+    links = [
+      { href: "/app", label: "Overview", icon: "overview" },
+      { href: "/app/console", label: "Console", icon: "console" },
+      { href: "/app/clients", label: "Users", icon: "users" },
+      { href: "/app/skills", label: "Skills", icon: "skills" },
+      { href: "/app/workspace", label: "Agent settings", icon: "settings" },
+      { href: "/app/developers", label: "Developers", icon: "developers" },
+    ];
   } else {
-    links = isOwner
-      ? [
-          { href: "/app/console", label: "Console" },
-          { href: "/app/clients", label: "Users" },
-          { href: "/app/skills", label: "Skills" },
-          { href: "/app/workspace", label: "Agent settings" },
-          { href: "/app/developers", label: "Developers" },
-        ]
-      : [
-          { href: "/app/chat", label: "Chat" },
-          { href: "/app/connections", label: "Connections" },
-        ];
+    threads = await listChatThreads(user.id);
+    footerLinks = [{ href: "/app/connections", label: "Connections", icon: "connections" }];
   }
-  if (isOperator(user)) links.push({ href: "/app/admin", label: "Monitor" });
+  if (isOperator(user)) links.push({ href: "/app/admin", label: "Monitor", icon: "monitor" });
 
+  const sidebarState = (await cookies()).get("sidebar_state")?.value;
   return (
-    <div className="flex min-h-full flex-1 flex-col bg-[linear-gradient(180deg,color-mix(in_oklab,var(--background),var(--chart-2)_5%),var(--background)_240px)]">
-      <AppNav
-        displayName={user.displayName || user.email}
-        workspaceName={workspace?.name}
+    <SidebarProvider defaultOpen={sidebarState !== "false"} className="h-svh">
+      <AppSidebar
+        workspaceName={workspace?.name || "Personal Agents"}
+        roleLabel={isOwner ? "Owner" : workspace ? "Personal agent" : "Getting started"}
         links={links}
-        showSettings={links.length > 0}
+        footerLinks={footerLinks}
+        threads={threads}
+        user={{ name: user.displayName || user.email || "You", email: user.email }}
+        showSettings={Boolean(workspace) && (isOwner || user.membershipStatus === "active")}
       />
-      <div className="mx-auto w-full max-w-5xl flex-1 px-4 py-8">{body}</div>
-    </div>
+      <SidebarInset data-scroll-root className="min-h-0 overflow-y-auto scrollbar-thin">
+        <AppFrame>{body}</AppFrame>
+      </SidebarInset>
+    </SidebarProvider>
   );
 }

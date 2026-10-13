@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 
+import { isValidThreadId } from "@/lib/agent-api";
 import { enqueueWebChat } from "@/lib/dispatch-web";
 import { getSession } from "@/lib/session";
 import { getUser } from "@/lib/users";
@@ -24,14 +25,17 @@ export async function POST(request: Request) {
   const form = await request.formData();
   const text = String(form.get("text") || "").trim();
   const attachments = form.getAll("attachments").map(String).filter(Boolean);
-  if (!text && !attachments.length) redirect("/app/chat");
+  const rawThread = String(form.get("threadId") || "");
+  const threadId = isValidThreadId(rawThread) ? rawThread : "main";
+  const back = `/app/chat?t=${encodeURIComponent(threadId)}`;
+  if (!text && !attachments.length) redirect(back);
 
   try {
-    const { job } = await enqueueWebChat({ user, text, attachments });
-    redirect(`/app/chat?job=${encodeURIComponent(job.id)}`);
+    await enqueueWebChat({ user, text, attachments, webThreadId: threadId });
+    redirect(back);
   } catch (error) {
     if (isNextRedirect(error)) throw error;
     const message = error instanceof Error ? error.message : String(error);
-    redirect(`/app/chat?error=${encodeURIComponent(message)}`);
+    redirect(`${back}&error=${encodeURIComponent(message)}`);
   }
 }

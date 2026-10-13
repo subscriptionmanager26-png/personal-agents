@@ -1,28 +1,26 @@
 import type { Metadata } from "next";
-import { DM_Sans, Fraunces } from "next/font/google";
+import { Geist, Geist_Mono } from "next/font/google";
+
+import { ThemeProvider } from "@/components/theme-provider";
+import { TooltipProvider } from "@/components/ui/tooltip";
+
 import "./globals.css";
 
-const sans = DM_Sans({
-  variable: "--font-sans",
-  subsets: ["latin"],
-});
-
-const display = Fraunces({
-  variable: "--font-heading",
-  subsets: ["latin"],
-});
+const sans = Geist({ variable: "--font-sans", subsets: ["latin"] });
+const mono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
   title: "Personal Agents",
-  description:
-    "Slack-authenticated personal Cursor agents with memory, vault, and installable skills.",
+  description: "A private AI agent for every client, trained on your playbooks.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${sans.variable} ${display.variable} h-full`}>
-      <body className="min-h-full flex flex-col font-sans antialiased">
-        {children}
+    <html lang="en" className={`${sans.variable} ${mono.variable} h-full`} suppressHydrationWarning>
+      <body className="flex min-h-full flex-col font-sans antialiased">
+        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem disableTransitionOnChange>
+          <TooltipProvider>{children}</TooltipProvider>
+        </ThemeProvider>
       </body>
     </html>
   );

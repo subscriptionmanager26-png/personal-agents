@@ -1,5 +1,12 @@
-import { AttachmentChips, Composer } from "@/components/composer";
-import { listJobsForUser } from "@/lib/jobs";
+import { Sparkles } from "lucide-react";
+
+import { TopBar } from "@/components/app-frame";
+import { AssistantMessage, UserMessage } from "@/components/chat/messages";
+import { ScrollAnchor } from "@/components/chat/scroll-anchor";
+import { Composer } from "@/components/composer";
+import { isValidThreadId } from "@/lib/agent-api";
+import { formatBytes, MAX_FILE_BYTES } from "@/lib/file-limits";
+import { chatMessage, listChatThreads, listThreadJobs, newThreadId } from "@/lib/threads";
 import { requireAgentUser } from "@/lib/viewer";
 
 import { AgentProgress } from "./agent-progress";
@@ -13,88 +20,90 @@ export default async function ChatPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const { user, workspace, isOwner } = await requireAgentUser();
-  const jobs = (await listJobsForUser(user.id, 40)).filter(
-    (j) => j.source === "web" || !j.source,
-  );
+  const { user, workspace } = await requireAgentUser();
   const params = await searchParams;
   const error = typeof params.error === "string" ? params.error : "";
-  const pending = jobs.some(
-    (j) =>
-      j.status === "queued" ||
-      j.status === "dispatched" ||
-      j.status === "delivering",
+  const requested = typeof params.t === "string" && isValidThreadId(params.t) ? params.t : undefined;
+
+  const threads = await listChatThreads(user.id);
+  const threadId = params.new ? newThreadId() : (requested ?? threads[0]?.id ?? newThreadId());
+  const thread = threads.find((t) => t.id === threadId);
+  const jobs = thread ? await listThreadJobs(user.id, threadId) : [];
+  const messages = jobs.map((job) => ({ job, message: chatMessage(job) }));
+  const working = messages.some((m) => m.message.status === "working");
+
+  const composer = (empty: boolean) => (
+    <Composer
+      action="/app/chat/send"
+      uploadUrl="/app/files"
+      fields={{ threadId }}
+      autoFocus={empty}
+      placeholder={empty ? "Ask anything, or drop a PDF, CSV or Excel file…" : "Reply…"}
+      suggestions={
+        empty
+          ? [
+              ...(workspace?.skills ?? []).slice(0, 3).map((s) => `Help me with ${s.name.toLowerCase()}`),
+              "What can you do for me?",
+            ]
+          : undefined
+      }
+      hint={
+        empty
+          ? `PDF, CSV and Excel up to ${formatBytes(MAX_FILE_BYTES)}. Private to you${workspace ? ` · ${workspace.name} can review your chats` : ""}.`
+          : undefined
+      }
+    />
   );
 
-  // Oldest first for chat reading
-  const timeline = [...jobs].reverse();
+  const errorBanner = error && (
+    <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">{error}</p>
+  );
 
+  if (!messages.length) {
+    return (
+      <div className="flex min-h-full shrink-0 flex-col">
+        <TopBar title="New chat" />
+        <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center gap-6 px-4 pb-[12vh]">
+          <div className="text-center">
+            <div className="mx-auto mb-4 flex size-10 items-center justify-center rounded-xl border bg-card">
+              <Sparkles className="size-5 text-muted-foreground" />
+            </div>
+            <h1 className="text-2xl font-semibold tracking-tight">What can I help you with?</h1>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              Your personal agent{workspace ? ` from ${workspace.name}` : ""}. It remembers past chats and can use the
+              accounts you connect.
+            </p>
+          </div>
+          {errorBanner}
+          {composer(true)}
+        </div>
+      </div>
+    );
+  }
+
+  const last = messages[messages.length - 1].message;
   return (
-    <div className="flex min-h-[70vh] flex-col gap-6">
-      <ChatRefresh active={pending} />
-      <div>
-        <h1 className="font-heading text-3xl tracking-tight">Chat</h1>
-        <p className="mt-1 text-muted-foreground">
-          {isOwner
-            ? "Your own agent, with the same skills your clients get. Use it to test your skills."
-            : `Your personal agent from ${workspace?.name}. It remembers past chats and can use the accounts you connect.`}
-        </p>
-        {!isOwner && workspace && (
-          <p className="mt-2 text-xs text-muted-foreground">
-            Private to you. No other client&apos;s agent can see this. {workspace.name} can read
-            your chats and memory.
-          </p>
-        )}
+    <div className="flex min-h-full shrink-0 flex-col">
+      <ChatRefresh active={working} />
+      <TopBar title={thread?.title ?? "Chat"} />
+      <div className="mx-auto w-full max-w-3xl flex-1 space-y-10 px-4 pt-8 pb-10">
+        {messages.map(({ job, message }) => (
+          <section key={message.id} className="space-y-5">
+            <UserMessage text={message.text} attachments={message.attachments} />
+            <AssistantMessage
+              message={message}
+              live={<AgentProgress jobId={job.id} startedAt={job.createdAt} steps={message.steps} />}
+            >
+              {job.cursorAgentId ? <FileBrowser jobId={job.id} active={message.status === "working"} /> : null}
+            </AssistantMessage>
+          </section>
+        ))}
+        {errorBanner}
+        <ScrollAnchor version={`${messages.length}:${last.status}:${last.blocks.length}:${last.steps.length}`} />
       </div>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-
-      <div className="flex-1 space-y-4 rounded-xl border border-border/70 bg-background/50 p-4">
-        {!timeline.length ? (
-          <p className="text-sm text-muted-foreground">
-            No messages yet. Say hello, or ask your agent what it can help with.
-          </p>
-        ) : (
-          timeline.map((job) => {
-            const active =
-              job.status === "queued" ||
-              job.status === "dispatched" ||
-              job.status === "delivering";
-            return (
-              <div key={job.id} className="space-y-2">
-                <AttachmentChips attachments={job.attachments ?? []} />
-                <div className="ml-auto w-fit max-w-[85%] rounded-2xl rounded-br-md bg-primary px-3 py-2 text-sm text-primary-foreground">
-                  <p className="whitespace-pre-wrap">{job.prompt}</p>
-                </div>
-                {active && !job.reply?.message && !job.error ? (
-                  <AgentProgress jobId={job.id} startedAt={job.createdAt} />
-                ) : null}
-                {job.reply?.message ? (
-                  <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-border/70 bg-muted/40 px-3 py-2 text-sm">
-                    <p className="whitespace-pre-wrap">{job.reply.message}</p>
-                  </div>
-                ) : job.error ? (
-                  <div className="mr-auto max-w-[85%] rounded-2xl rounded-bl-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-                    {job.error}
-                  </div>
-                ) : null}
-                {job.cursorAgentId ? <FileBrowser jobId={job.id} active={active} /> : null}
-              </div>
-            );
-          })
-        )}
+      <div className="sticky bottom-0 z-10 bg-linear-to-t from-background from-70% to-transparent px-4 pt-6 pb-4">
+        <div className="mx-auto max-w-3xl">{composer(false)}</div>
       </div>
-
-      <Composer
-        action="/app/chat/send"
-        uploadUrl="/app/files"
-        placeholder="Message your personal agent, or attach a PDF, CSV or Excel file…"
-        hint={
-          pending
-            ? "Agent is working — this page refreshes automatically."
-            : "PDF, CSV and Excel up to 4 MB. Drop files here."
-        }
-      />
     </div>
   );
 }

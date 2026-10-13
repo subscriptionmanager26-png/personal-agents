@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,14 +20,15 @@ export function AuthForm({
   signupLabel?: string;
 }) {
   const tab = (active: boolean) =>
-    active ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground";
+    `flex-1 rounded-md px-3 py-1.5 text-center text-sm transition-colors ${
+      active ? "bg-background font-medium text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+    }`;
   return (
-    <div className="w-full max-w-md rounded-2xl border border-border/70 bg-background/80 p-6 shadow-sm backdrop-blur">
-      <div className="flex gap-2 text-sm">
+    <div className="w-full rounded-xl border bg-card p-6 shadow-sm">
+      <div className="flex gap-1 rounded-lg bg-muted p-1">
         <Link href={`${basePath}?mode=login`} className={tab(mode === "login")}>
           Sign in
         </Link>
-        <span className="text-muted-foreground">·</span>
         <Link href={`${basePath}?mode=signup`} className={tab(mode === "signup")}>
           {signupLabel}
         </Link>
@@ -41,7 +43,7 @@ export function AuthForm({
       <form
         action={mode === "signup" ? "/api/auth/email/signup" : "/api/auth/email/login"}
         method="post"
-        className="mt-5 space-y-3"
+        className="mt-5 space-y-4"
       >
         {workspaceSlug && <input type="hidden" name="workspace" value={workspaceSlug} />}
         {mode === "signup" && (
@@ -66,10 +68,44 @@ export function AuthForm({
             autoComplete={mode === "signup" ? "new-password" : "current-password"}
           />
         </div>
-        <Button type="submit" className="w-full">
+        <Button type="submit" className="h-9 w-full">
           {mode === "signup" ? signupLabel : "Sign in"}
         </Button>
       </form>
     </div>
+  );
+}
+
+/** Centered sign-in layout shared by the home and join pages. */
+export function AuthPage({
+  brand,
+  title,
+  description,
+  footnote,
+  children,
+}: {
+  brand: string;
+  title: string;
+  description: ReactNode;
+  footnote?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <main className="flex min-h-svh flex-1 flex-col items-center justify-center px-4 py-12">
+      <div className="w-full max-w-sm space-y-6">
+        <div className="flex flex-col items-center text-center">
+          <div className="mb-5 flex items-center gap-2 text-sm font-medium">
+            <span className="flex size-7 items-center justify-center rounded-lg bg-primary text-xs font-semibold text-primary-foreground">
+              {brand.slice(0, 1).toUpperCase()}
+            </span>
+            {brand}
+          </div>
+          <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
+          <p className="mt-2 text-sm text-balance text-muted-foreground">{description}</p>
+        </div>
+        {children}
+        {footnote && <p className="px-2 text-center text-xs leading-relaxed text-balance text-muted-foreground">{footnote}</p>}
+      </div>
+    </main>
   );
 }

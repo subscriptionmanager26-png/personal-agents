@@ -30,7 +30,7 @@ export default async function ConnectionsPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Connections</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Connections</h1>
         <p className="mt-1 text-muted-foreground">
           Give your agent access to your accounts, either with a saved login or with an MCP
           integration. Your agent never sees the password or key itself, and nobody else

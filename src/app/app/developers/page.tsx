@@ -57,7 +57,7 @@ export default async function DevelopersPage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Developers</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Developers</h1>
         <p className="mt-1 text-muted-foreground">
           Your backend gives each of your users a private agent and renders its replies in your
           own UI. Base URL: <code>{origin}</code>

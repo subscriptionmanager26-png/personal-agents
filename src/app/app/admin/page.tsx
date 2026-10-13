@@ -26,7 +26,7 @@ export default async function AdminPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Monitor</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Monitor</h1>
         <p className="mt-1 text-muted-foreground">
           Control-plane overview across personal agents (operators only).
         </p>
@@ -37,19 +37,19 @@ export default async function AdminPage() {
           <CardHeader>
             <CardTitle>Users</CardTitle>
           </CardHeader>
-          <CardContent className="text-3xl font-heading">{users.length}</CardContent>
+          <CardContent className="text-3xl font-semibold tabular-nums tracking-tight">{users.length}</CardContent>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Jobs</CardTitle>
           </CardHeader>
-          <CardContent className="text-3xl font-heading">{jobs.length}</CardContent>
+          <CardContent className="text-3xl font-semibold tabular-nums tracking-tight">{jobs.length}</CardContent>
         </Card>
         <Card>
           <CardHeader>
             <CardTitle>Slack installs</CardTitle>
           </CardHeader>
-          <CardContent className="text-3xl font-heading">
+          <CardContent className="text-3xl font-semibold tabular-nums tracking-tight">
             {Object.keys(store.slackInstalls || {}).length}
           </CardContent>
         </Card>

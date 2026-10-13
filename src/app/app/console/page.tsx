@@ -13,17 +13,10 @@ export default async function ConsolePage() {
     .sort((a, b) => b.lastSeenAt.localeCompare(a.lastSeenAt))
     .map((u) => u.externalId!)
     .slice(0, 50);
+  const suggestions = [
+    ...workspace.skills.slice(0, 3).map((s) => `Help me with ${s.name.toLowerCase()}`),
+    "What can you do for me?",
+  ];
 
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="font-heading text-3xl tracking-tight">Console</h1>
-        <p className="mt-1 text-muted-foreground">
-          Act as your app: open any of your users&apos; agents and see exactly what the API streams.
-          This rendering is only a reference; your UI decides how each block looks.
-        </p>
-      </div>
-      <ConsoleClient knownUsers={knownUsers} />
-    </div>
-  );
+  return <ConsoleClient knownUsers={knownUsers} suggestions={suggestions} />;
 }

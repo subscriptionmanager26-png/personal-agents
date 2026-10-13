@@ -1,9 +1,9 @@
 "use client";
 
-import { Loader2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useEffectEvent, useState } from "react";
 
+import { WorkingSteps } from "@/components/chat/messages";
 import type { TraceEvent } from "@/lib/trace-types";
 
 function labelFor(event: TraceEvent | undefined): string | undefined {
@@ -37,15 +37,10 @@ function labelFor(event: TraceEvent | undefined): string | undefined {
   }
 }
 
-function formatElapsed(ms: number) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
-
-export function AgentProgress({ jobId, startedAt }: { jobId: string; startedAt: string }) {
+/** Live progress for a web message: the agent's own steps plus what the Cursor run is doing right now. */
+export function AgentProgress({ jobId, startedAt, steps }: { jobId: string; startedAt: string; steps: string[] }) {
   const router = useRouter();
   const [label, setLabel] = useState("Starting your agent…");
-  const [elapsed, setElapsed] = useState("");
 
   const onFinished = useEffectEvent(() => router.refresh());
 
@@ -63,26 +58,5 @@ export function AgentProgress({ jobId, startedAt }: { jobId: string; startedAt: 
     return () => source.close();
   }, [jobId]);
 
-  useEffect(() => {
-    const start = Date.parse(startedAt);
-    const tick = () => setElapsed(formatElapsed(Date.now() - start));
-    const first = window.setTimeout(tick, 0);
-    const timer = window.setInterval(tick, 1000);
-    return () => {
-      window.clearTimeout(first);
-      window.clearInterval(timer);
-    };
-  }, [startedAt]);
-
-  return (
-    <div
-      role="status"
-      aria-live="polite"
-      className="mr-auto flex w-fit max-w-[85%] items-center gap-2 rounded-2xl rounded-bl-md border border-border/70 bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
-    >
-      <Loader2 className="size-4 shrink-0 animate-spin" />
-      <span>{label}</span>
-      {elapsed && <span className="tabular-nums text-xs opacity-70">{elapsed}</span>}
-    </div>
-  );
+  return <WorkingSteps steps={steps} label={steps.length && label === "Starting your agent…" ? undefined : label} startedAt={startedAt} />;
 }

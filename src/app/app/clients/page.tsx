@@ -91,7 +91,7 @@ export default async function ClientsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Clients</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Users</h1>
         <p className="mt-1 text-muted-foreground">
           Users created by your backend through the API are active immediately. People can also sign
           up at <code>/join/{workspace.slug}</code> and wait for your approval.

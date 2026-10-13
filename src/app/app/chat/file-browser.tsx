@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, FileText, Film, Folder, FolderOpen, ImageIcon, File as FileIcon } from "lucide-react";
+import { ChevronDown, ChevronRight, Download, FileText, Film, Folder, FolderOpen, ImageIcon, File as FileIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ArtifactItem } from "@/lib/trace-types";
@@ -103,6 +103,7 @@ export function FileBrowser({ jobId, active }: { jobId: string; active: boolean 
   const [visible, setVisible] = useState(false);
   const [items, setItems] = useState<ArtifactItem[] | null>(null);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -148,13 +149,34 @@ export function FileBrowser({ jobId, active }: { jobId: string; active: boolean 
 
   if (!items?.length) return <div ref={rootRef} />;
 
+  if (!open) {
+    return (
+      <div ref={rootRef}>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="flex items-center gap-2 rounded-lg border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+        >
+          <Folder className="size-3.5" />
+          {items.length} {items.length === 1 ? "file" : "files"} created
+          <ChevronRight className="size-3.5" />
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div ref={rootRef} className="mr-auto w-full max-w-[92%] overflow-hidden rounded-xl border border-border/70 bg-background shadow-xs">
-      <div className="flex items-center gap-2 border-b border-border/60 px-3 py-2 text-sm">
+    <div ref={rootRef} className="w-full overflow-hidden rounded-xl border bg-card">
+      <button
+        type="button"
+        onClick={() => setOpen(false)}
+        className="flex w-full items-center gap-2 border-b px-3 py-2 text-left text-sm hover:bg-muted/40"
+      >
         <FolderOpen className="size-4 text-muted-foreground" />
         <span className="font-medium">Files</span>
         <span className="text-xs text-muted-foreground">{items.length}</span>
-      </div>
+        <ChevronDown className="ml-auto size-4 text-muted-foreground" />
+      </button>
       <div className="grid sm:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
         <ul className="max-h-[420px] overflow-auto border-b border-border/60 py-1 sm:border-r sm:border-b-0">
           {groups.map((group) => (

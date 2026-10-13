@@ -33,7 +33,7 @@ export default async function MemoryPage({
         <Link href="/app/settings" className="text-sm text-muted-foreground hover:text-foreground">
           ← Settings
         </Link>
-        <h1 className="mt-2 font-heading text-3xl tracking-tight">Agent memory</h1>
+        <h1 className="mt-2 text-2xl font-semibold tracking-tight">Agent memory</h1>
         <p className="mt-1 text-muted-foreground">
           Your agent keeps these notes itself: after each chat it saves what matters and decides
           how important each note is. The most important notes are loaded into every conversation.

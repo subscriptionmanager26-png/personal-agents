@@ -1,11 +1,12 @@
 "use client";
 
-import { FileSpreadsheet, FileText, Loader2, Lock, Paperclip, X } from "lucide-react";
+import { ArrowUp, FileSpreadsheet, FileText, Loader2, Lock, Paperclip, X } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ACCEPTED_EXTENSIONS, ACCEPTED_FILE_TYPES, formatBytes, MAX_ATTACHMENTS, MAX_FILE_BYTES } from "@/lib/file-limits";
 
 type Item = {
@@ -38,6 +39,9 @@ export function Composer({
   disabled,
   placeholder = "Message your agent…",
   hint,
+  fields,
+  suggestions,
+  autoFocus,
 }: {
   uploadUrl: string;
   action?: string;
@@ -45,12 +49,18 @@ export function Composer({
   disabled?: boolean;
   placeholder?: string;
   hint?: ReactNode;
+  /** Extra hidden form fields posted with the message. */
+  fields?: Record<string, string>;
+  /** Prompts shown above an empty composer; clicking one fills it in. */
+  suggestions?: string[];
+  autoFocus?: boolean;
 }) {
   const [text, setText] = useState("");
   const [items, setItems] = useState<Item[]>([]);
   const [dragging, setDragging] = useState(false);
   const [sending, setSending] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
+  const input = useRef<HTMLTextAreaElement>(null);
 
   const patch = (key: string, next: Partial<Item>) =>
     setItems((cur) => cur.map((i) => (i.key === key ? { ...i, ...next } : i)));
@@ -111,7 +121,10 @@ export function Composer({
       e.preventDefault();
       return;
     }
-    if (!onSend) return;
+    if (!onSend) {
+      setSending(true);
+      return;
+    }
     e.preventDefault();
     setSending(true);
     try {
@@ -125,6 +138,24 @@ export function Composer({
   };
 
   return (
+    <div className="space-y-2">
+      {suggestions && suggestions.length > 0 && !text && !items.length && (
+        <div className="flex flex-wrap gap-2">
+          {suggestions.map((s) => (
+            <button
+              key={s}
+              type="button"
+              onClick={() => {
+                setText(s);
+                input.current?.focus();
+              }}
+              className="rounded-full border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      )}
     <form
       action={action}
       method={action ? "post" : undefined}
@@ -141,29 +172,45 @@ export function Composer({
         setDragging(false);
         addFiles(e.dataTransfer.files);
       }}
-      className={`space-y-2 rounded-xl border p-2 transition-colors ${dragging ? "border-primary bg-primary/5" : "border-border/70"}`}
+      className={`rounded-2xl border bg-card shadow-sm transition-colors focus-within:border-ring/60 ${
+        dragging ? "border-info bg-info/5" : ""
+      }`}
     >
+      {Object.entries(fields ?? {}).map(([name, value]) => (
+        <input key={name} type="hidden" name={name} value={value} />
+      ))}
       {ready.map((i) => (
         <input key={i.key} type="hidden" name="attachments" value={i.id} />
       ))}
       {items.length > 0 && (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex flex-wrap gap-1.5 px-3 pt-3">
           {items.map((item) => {
-            const Icon = item.name.toLowerCase().endsWith(".pdf") ? FileText : FileSpreadsheet;
+            const pdf = item.name.toLowerCase().endsWith(".pdf");
+            const Icon = pdf ? FileText : FileSpreadsheet;
             return (
               <div
                 key={item.key}
-                className={`flex max-w-full items-center gap-2 rounded-lg border px-2 py-1 text-xs ${
-                  item.status === "error" ? "border-destructive/50 text-destructive" : "border-border/70 bg-muted/40"
+                className={`flex max-w-full items-center gap-2 rounded-lg border py-1 pr-2 pl-1 text-xs ${
+                  item.status === "error" ? "border-destructive/50 text-destructive" : "bg-background/60"
                 }`}
               >
-                {item.status === "uploading" || item.status === "unlocking" ? (
-                  <Loader2 className="size-3.5 shrink-0 animate-spin" />
-                ) : item.status === "needs_password" ? (
-                  <Lock className="size-3.5 shrink-0" />
-                ) : (
-                  <Icon className="size-3.5 shrink-0" />
-                )}
+                <span
+                  className={`flex size-6 shrink-0 items-center justify-center rounded-md ${
+                    item.status === "error"
+                      ? "bg-destructive/15"
+                      : pdf
+                        ? "bg-destructive/15 text-destructive"
+                        : "bg-success/15 text-success"
+                  }`}
+                >
+                  {item.status === "uploading" || item.status === "unlocking" ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : item.status === "needs_password" ? (
+                    <Lock className="size-3.5" />
+                  ) : (
+                    <Icon className="size-3.5" />
+                  )}
+                </span>
                 <span className="max-w-48 truncate font-medium">{item.name}</span>
                 {item.size > 0 && <span className="text-muted-foreground">{formatBytes(item.size)}</span>}
                 {item.status === "error" && <span>{item.error}</span>}
@@ -203,12 +250,14 @@ export function Composer({
         </div>
       )}
       <Textarea
+        ref={input}
         name="text"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        rows={3}
+        rows={1}
+        autoFocus={autoFocus}
         placeholder={placeholder}
-        className="resize-none border-0 shadow-none focus-visible:ring-0"
+        className="max-h-60 min-h-14 resize-none border-0 bg-transparent px-4 pt-3.5 text-[15px] shadow-none focus-visible:ring-0 md:text-[15px] dark:bg-transparent"
         onPaste={(e) => {
           if (e.clipboardData.files.length) {
             e.preventDefault();
@@ -222,55 +271,42 @@ export function Composer({
           }
         }}
       />
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <input
-            ref={picker}
-            type="file"
-            multiple
-            accept={ACCEPTED_FILE_TYPES}
-            className="hidden"
-            onChange={(e) => {
-              if (e.target.files?.length) addFiles(e.target.files);
-              e.target.value = "";
-            }}
-          />
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => picker.current?.click()}
-            disabled={items.length >= MAX_ATTACHMENTS}
-            title="Attach PDF, CSV or Excel"
+      <div className="flex items-center justify-between gap-3 px-2 pb-2">
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          accept={ACCEPTED_FILE_TYPES}
+          className="hidden"
+          onChange={(e) => {
+            if (e.target.files?.length) addFiles(e.target.files);
+            e.target.value = "";
+          }}
+        />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                className="rounded-full text-muted-foreground"
+                aria-label="Attach files"
+                onClick={() => picker.current?.click()}
+                disabled={items.length >= MAX_ATTACHMENTS}
+              />
+            }
           >
-            <Paperclip className="size-4" />
-            Attach
-          </Button>
-          {hint && <div className="truncate text-xs text-muted-foreground">{hint}</div>}
-        </div>
-        <Button type="submit" disabled={!canSend}>
-          {sending ? <Loader2 className="size-4 animate-spin" /> : null}
-          Send
+            <Paperclip />
+          </TooltipTrigger>
+          <TooltipContent>Attach PDF, CSV or Excel (up to {formatBytes(MAX_FILE_BYTES)})</TooltipContent>
+        </Tooltip>
+        <Button type="submit" size="icon-sm" className="rounded-full" disabled={!canSend} aria-label="Send">
+          {sending ? <Loader2 className="animate-spin" /> : <ArrowUp />}
         </Button>
       </div>
     </form>
-  );
-}
-
-export function AttachmentChips({ attachments }: { attachments: { id: string; name: string; size: number }[] }) {
-  if (!attachments.length) return null;
-  return (
-    <div className="flex flex-wrap justify-end gap-1.5">
-      {attachments.map((a) => {
-        const Icon = a.name.toLowerCase().endsWith(".pdf") ? FileText : FileSpreadsheet;
-        return (
-          <span key={a.id} className="flex items-center gap-1.5 rounded-md border border-border/70 bg-muted/40 px-2 py-0.5 text-xs">
-            <Icon className="size-3.5" />
-            <span className="max-w-48 truncate">{a.name}</span>
-            <span className="text-muted-foreground">{formatBytes(a.size)}</span>
-          </span>
-        );
-      })}
+      {hint && <div className="px-1 text-center text-xs text-muted-foreground">{hint}</div>}
     </div>
   );
 }

@@ -30,7 +30,7 @@ export default async function WorkspacePage({
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="font-heading text-3xl tracking-tight">Workspace</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">Agent settings</h1>
         <p className="mt-1 text-muted-foreground">
           How every client&apos;s agent behaves. Clients never see these instructions.
         </p>
