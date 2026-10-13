@@ -6,19 +6,20 @@ import { normalizeMcpUrl, slugify } from "@/lib/workspaces";
 
 const PURPOSE = "mcp-connection";
 /** Names the control plane uses for its own MCP servers. */
-export const RESERVED_MCP_NAMES = new Set(["personal-vault", "personal-memory"]);
+export const RESERVED_MCP_NAMES = new Set(["personal-vault", "personal-memory", "zerodha"]);
 const HEADER_NAME = /^[A-Za-z0-9-]{1,60}$/;
 
-export type PublicConnection = Omit<McpConnection, "headerValueEnc"> & { hasSecret: boolean };
+export type PublicConnection = Omit<McpConnection, "headerValueEnc" | "sessionEnc"> & { hasSecret: boolean };
 
-function toPublic({ headerValueEnc, ...rest }: McpConnection): PublicConnection {
-  return { ...rest, hasSecret: Boolean(headerValueEnc) };
+function toPublic({ headerValueEnc, sessionEnc, ...rest }: McpConnection): PublicConnection {
+  return { ...rest, hasSecret: Boolean(headerValueEnc || sessionEnc) };
 }
 
+/** URL-based connections the client added; built-in ones (Zerodha) are listed separately. */
 export async function listConnections(ownerUserId: string): Promise<PublicConnection[]> {
   const store = await getStore();
   return (store.connections[ownerUserId] ?? [])
-    .filter((c) => c.ownerUserId === ownerUserId)
+    .filter((c) => c.ownerUserId === ownerUserId && !c.builtin)
     .map(toPublic);
 }
 
@@ -81,7 +82,7 @@ export async function deleteConnection(ownerUserId: string, id: string) {
 export async function mcpServersForUser(ownerUserId: string) {
   const store = await getStore();
   return (store.connections[ownerUserId] ?? [])
-    .filter((c) => c.ownerUserId === ownerUserId)
+    .filter((c) => c.ownerUserId === ownerUserId && !c.builtin)
     .map((c) => ({
       name: c.name,
       type: "http" as const,

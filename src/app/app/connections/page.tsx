@@ -10,10 +10,20 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { listConnections } from "@/lib/connections";
+import { getKiteConnection, kiteLoggedInAs } from "@/lib/kite";
+import { runtimeFor } from "@/lib/runtime";
 import { listVaultItems } from "@/lib/vault";
 import { requireAgentUser } from "@/lib/viewer";
 
 export const dynamic = "force-dynamic";
+
+/** "unknown" when Zerodha is slow or down; the page must not hang on it. */
+async function zerodhaStatus(ownerUserId: string) {
+  if (!(await getKiteConnection(ownerUserId))) return { connected: false as const };
+  const timeout = new Promise<"unknown">((resolve) => setTimeout(() => resolve("unknown"), 8000));
+  const name = await Promise.race([kiteLoggedInAs(ownerUserId).catch(() => "unknown" as const), timeout]);
+  return { connected: true as const, loggedInAs: name };
+}
 
 export default async function ConnectionsPage({
   searchParams,
@@ -21,7 +31,12 @@ export default async function ConnectionsPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const { user, workspace } = await requireAgentUser();
-  const [items, connections] = await Promise.all([listVaultItems(user.id), listConnections(user.id)]);
+  const [items, connections, zerodha] = await Promise.all([
+    listVaultItems(user.id),
+    listConnections(user.id),
+    zerodhaStatus(user.id),
+  ]);
+  const zerodhaReachable = Boolean(runtimeFor(workspace).agentPublicUrl);
   const connectedSuggestions = new Set(connections.map((c) => c.suggestionId).filter(Boolean));
   const suggestions = (workspace?.suggestedConnections ?? []).filter((s) => !connectedSuggestions.has(s.id));
   const params = await searchParams;
@@ -39,6 +54,75 @@ export default async function ConnectionsPage({
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            Zerodha
+            {zerodha.connected &&
+              (zerodha.loggedInAs === "unknown" ? (
+                <Badge variant="outline">connected</Badge>
+              ) : zerodha.loggedInAs ? (
+                <Badge>logged in</Badge>
+              ) : (
+                <Badge variant="outline">login needed</Badge>
+              ))}
+          </CardTitle>
+          <CardDescription>
+            Let your agent read your Zerodha holdings, mutual funds, positions, orders and live
+            prices through Zerodha&apos;s official Kite connection. It can&apos;t place or cancel
+            orders there; any trade it suggests waits for your confirmation. You log in on
+            Zerodha&apos;s own page, once per trading day.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          {zerodha.connected && zerodha.loggedInAs && zerodha.loggedInAs !== "unknown" && (
+            <p>Logged in as {zerodha.loggedInAs}.</p>
+          )}
+          {zerodha.connected && !zerodha.loggedInAs && (
+            <p className="text-muted-foreground">
+              Your Zerodha login has expired. Log in again so your agent can read your account.
+            </p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            AI systems are unpredictable. By logging in you let your agent read your Zerodha
+            account at your own risk.
+          </p>
+          {!zerodhaReachable && user.role !== "client" && (
+            <p className="text-xs text-destructive">
+              Agents can only use Zerodha once this workspace has a public URL (Developers → Agent
+              runtime).
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {!zerodha.connected ? (
+              <form action="/app/connections/zerodha" method="post" target="_blank">
+                <input type="hidden" name="action" value="connect" />
+                <Button size="sm" type="submit">
+                  Connect Zerodha
+                </Button>
+              </form>
+            ) : (
+              <>
+                {(!zerodha.loggedInAs || zerodha.loggedInAs === "unknown") && (
+                  <form action="/app/connections/zerodha" method="post" target="_blank">
+                    <input type="hidden" name="action" value="login" />
+                    <Button size="sm" type="submit">
+                      Log in to Zerodha
+                    </Button>
+                  </form>
+                )}
+                <form action="/app/connections/zerodha" method="post">
+                  <input type="hidden" name="action" value="disconnect" />
+                  <Button size="sm" variant="ghost" type="submit">
+                    Disconnect
+                  </Button>
+                </form>
+              </>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       {suggestions.length > 0 && (
         <Card>
@@ -89,8 +173,8 @@ export default async function ConnectionsPage({
         <CardHeader>
           <CardTitle>Integrations (MCP)</CardTitle>
           <CardDescription>
-            Keys are encrypted here and only attached by Cursor&apos;s servers when your agent calls
-            the integration.
+            Keys are encrypted and only attached when your agent calls the integration; the agent
+            never sees them.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

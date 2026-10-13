@@ -16,7 +16,7 @@ export function toolText(value: unknown, isError = false): ToolResult {
 export type McpServerSpec = {
   name: string;
   instructions?: () => Promise<string> | string;
-  tools: McpTool[];
+  tools: McpTool[] | (() => Promise<McpTool[]>);
   call: (name: string, args: Record<string, unknown>) => Promise<ToolResult | undefined>;
 };
 
@@ -37,7 +37,7 @@ async function handleOne(spec: McpServerSpec, req: RpcRequest): Promise<RpcRespo
     case "ping":
       return ok({});
     case "tools/list":
-      return ok({ tools: spec.tools });
+      return ok({ tools: typeof spec.tools === "function" ? await spec.tools() : spec.tools });
     case "tools/call": {
       const name = typeof req.params?.name === "string" ? req.params.name : "";
       const args = (req.params?.arguments ?? {}) as Record<string, unknown>;

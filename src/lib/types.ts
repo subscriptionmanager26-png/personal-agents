@@ -196,6 +196,11 @@ export type McpConnection = {
   headerName?: string;
   headerValueEnc?: string;
   suggestionId?: string;
+  /** Built-in integration reached through our own proxy rather than by URL. */
+  builtin?: "kite";
+  /** Kite MCP session id, encrypted: whoever holds it acts on the client's Zerodha login. */
+  sessionEnc?: string;
+  sessionStartedAt?: string;
   createdAt: string;
 };
 

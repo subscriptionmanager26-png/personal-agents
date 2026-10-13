@@ -14,6 +14,7 @@ import {
 } from "@/lib/cursor-api";
 import { ensurePersonalRepo, syncWorkspaceSkills } from "@/lib/github";
 import { patchJob } from "@/lib/jobs";
+import { getKiteConnection, KITE_MCP_NAME } from "@/lib/kite";
 import { mockRunId } from "@/lib/mock-trace";
 import { buildPersonalAgentPrompt } from "@/lib/prompt";
 import { createMemoryToken } from "@/lib/run-token";
@@ -77,10 +78,21 @@ async function buildMcpServers(
   }
   const connections = await mcpServersForUser(user.id);
   servers.push(...connections);
+  // The client's Kite session stays with us; the agent reaches Zerodha only through our read-only proxy.
+  const zerodha = Boolean(base && (await getKiteConnection(user.id)));
+  if (zerodha) {
+    servers.push({
+      name: KITE_MCP_NAME,
+      type: "http",
+      url: `${base}/api/mcp/zerodha`,
+      headers: { Authorization: `Bearer ${await createMemoryToken({ ownerUserId: user.id, jobId: job.id })}` },
+    });
+  }
   return {
     servers,
     agentTools: Boolean(base),
     vaultTools,
+    zerodha,
     companyServers: company.map((c) => c.name),
     connections: connections.map((c) => c.name),
   };
@@ -143,6 +155,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   const promptText = await buildPersonalAgentPrompt(current, job, {
     agentTools: mcp.agentTools,
     vaultTools: mcp.vaultTools,
+    zerodha: mcp.zerodha,
     skillsInRepo,
     companyServers: mcp.companyServers,
     connections: mcp.connections,

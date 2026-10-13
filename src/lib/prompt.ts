@@ -60,6 +60,8 @@ export type PromptRuntime = {
   agentTools: boolean;
   /** The personal-vault tools can run in this agent's VM (they need the client's repo). Default true. */
   vaultTools?: boolean;
+  /** The client's Zerodha account (read-only Kite MCP proxy) is attached to this run. */
+  zerodha?: boolean;
   /** Workspace skills are present as files in the repo (otherwise they are inlined). */
   skillsInRepo: boolean;
   /** Names of the company's MCP servers attached to this run. */
@@ -184,6 +186,11 @@ export async function buildPersonalAgentPrompt(
     ? `The client connected these MCP servers; use their tools when relevant (for example to read portfolio data): ${runtime.connections.join(", ")}.
 If a connection asks the client to log in, give them the login link it returns and wait for them.`
     : "(no MCP connections)";
+  const zerodhaSection = runtime.zerodha
+    ? `
+Zerodha: the client linked their own Zerodha account. Use the **zerodha** tools for their real holdings, mutual funds, positions, margins, orders, trades, quotes and price history; prefer them over guesses or uploaded statements when the client asks about their portfolio. They are read-only: to buy or sell, use propose_order so the client confirms.
+If a zerodha tool says a login is needed, the client already sees a "Log in to Zerodha" button. Ask them to log in there and send their message again (the login lasts the trading day). Never paste login links.`
+    : "";
 
   return `You are the personal agent of ${clientName}${isOwner ? ` (the owner of ${business}, testing their own agent)` : `, a client of ${business}`}.
 
@@ -236,6 +243,7 @@ If vault_fill fails with origin_mismatch, stop — do not try to bypass.`
 
 MCP connections:
 ${connectionsList}
+${zerodhaSection}
 
 ## Files
 ${runtime.agentTools ? "The client can upload PDF, CSV and Excel files in the app. list_files shows earlier uploads; refer to them when relevant." : "The client can upload PDF, CSV and Excel files in the app."}${attachments}
