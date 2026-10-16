@@ -11,6 +11,7 @@ export function AuthForm({
   basePath,
   workspaceSlug,
   signupLabel = "Create account",
+  hideSignup = false,
 }: {
   mode: "login" | "signup";
   error?: string;
@@ -18,6 +19,7 @@ export function AuthForm({
   basePath: string;
   workspaceSlug?: string;
   signupLabel?: string;
+  hideSignup?: boolean;
 }) {
   const tab = (active: boolean) =>
     `flex-1 rounded-md px-3 py-1.5 text-center text-sm transition-colors ${
@@ -25,14 +27,16 @@ export function AuthForm({
     }`;
   return (
     <div className="w-full rounded-xl border bg-card p-6 shadow-sm">
-      <div className="flex gap-1 rounded-lg bg-muted p-1">
-        <Link href={`${basePath}?mode=login`} className={tab(mode === "login")}>
-          Sign in
-        </Link>
-        <Link href={`${basePath}?mode=signup`} className={tab(mode === "signup")}>
-          {signupLabel}
-        </Link>
-      </div>
+      {!hideSignup && (
+        <div className="flex gap-1 rounded-lg bg-muted p-1">
+          <Link href={`${basePath}?mode=login`} className={tab(mode === "login")}>
+            Sign in
+          </Link>
+          <Link href={`${basePath}?mode=signup`} className={tab(mode === "signup")}>
+            {signupLabel}
+          </Link>
+        </div>
+      )}
 
       {error && (
         <p className="mt-4 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
