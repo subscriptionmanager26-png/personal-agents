@@ -133,8 +133,8 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     return { user: current, agentId: mockId, mock: true };
   }
 
-  // Without a GitHub token each agent starts with no repo; instructions and skills travel in the prompt.
-  const withRepo = Boolean(rt.githubToken);
+  // Pocketedge API clients (externalId) share the company workspace — no per-user GitHub repo.
+  const withRepo = Boolean(rt.githubToken) && !latest.externalId;
   let current = latest;
   let skillsInRepo = false;
   if (withRepo) {
