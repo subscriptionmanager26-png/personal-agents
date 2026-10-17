@@ -6,6 +6,9 @@
  *
  * Production store (after `vercel env pull` into .env.local):
  *   npx tsx --env-file=.env.local scripts/seed-pocketedge.ts https://personal-agents-psi.vercel.app
+ *
+ * Ops console: https://studio.pocketedge.in (or psi URL). Do not use agents.pocketedge.in — that
+ * subdomain is reserved for inbound email (MX), not HTTP.
  */
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
