@@ -68,9 +68,9 @@ export async function GET(
       if (!res.ok) throw new Error(`Artifact fetch failed (${res.status})`);
       return textResponse(await res.text());
     }
-    return Response.redirect(url, {
+    return new Response(null, {
       status: 302,
-      headers: { "Cache-Control": "private, no-store" },
+      headers: { Location: url, "Cache-Control": "private, no-store" },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
