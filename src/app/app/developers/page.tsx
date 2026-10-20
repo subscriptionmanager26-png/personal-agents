@@ -26,6 +26,8 @@ const ENDPOINTS: [string, string, string][] = [
   ["POST", "/api/v1/users/{userId}/files", "Upload a PDF, CSV or Excel file (multipart field `file`, up to 4 MB). 201 with { file }; status needs_password for locked PDFs."],
   ["POST", "/api/v1/users/{userId}/files/{fileId}/unlock", "Open a password-protected PDF (e.g. a CAS statement): { password }. The password is used once, never stored."],
   ["GET", "/api/v1/users/{userId}/files", "The user's files, newest first. GET /files/{fileId} for one; DELETE removes it."],
+  ["GET", "/api/v1/users/{userId}/messages/{messageId}/artifacts", "Files the agent wrote for that message (under artifacts/ in its VM)."],
+  ["GET", "/api/v1/users/{userId}/messages/{messageId}/artifacts/file?path=…", "Download one artifact; optional as=text for text previews."],
   ["POST", "/api/v1/users/{userId}/messages", "Send { text, threadId?, attachments?: [fileId…] } (up to 5 files; text may be empty with files). 202 with the message and its events URL. 409 agent_busy while a reply is in progress."],
   ["GET", "/api/v1/users/{userId}/messages/{id}/events", "Server-sent events for that message (see below). Resume with Last-Event-ID or ?after=<seq>."],
   ["GET", "/api/v1/users/{userId}/messages/{id}", "The message with all blocks and actions, for redrawing."],
