@@ -5,8 +5,6 @@ import "./saffron-styles.css";
 import { SaffronChrome } from "@/components/saffron/saffron-chrome";
 import { SaffronHorizonGl } from "@/components/saffron/saffron-horizon-gl";
 import { SaffronReveal } from "@/components/saffron/saffron-reveal";
-import { SaffronRotatingPhrase } from "@/components/saffron/saffron-rotating-phrase";
-
 const PILLARS = [
   {
     title: "Hire AI employees",
@@ -45,11 +43,13 @@ export function SaffronExperience() {
             <SaffronReveal>
               <div className="max-w-4xl">
                 <p className="mb-6 text-sm text-white/45 md:text-[15px]">
-                  SaffronAI helps companies{" "}
+                  SaffronAI enables companies to{" "}
                   <span className="font-medium text-white/85">
-                    <SaffronRotatingPhrase />
+                    hire and train
                   </span>{" "}
-                  AI employees
+                  AI employees — and ship{" "}
+                  <span className="font-medium text-white/85">AI-native</span> websites on plug-and-play
+                  infrastructure.
                 </p>
                 <h1 className="text-[clamp(2.35rem,6.2vw,4.75rem)] leading-[1.01] font-semibold tracking-[-0.035em]">
                   Hire and train
