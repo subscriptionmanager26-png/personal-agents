@@ -1,5 +1,6 @@
 import { isValidThreadId, listMessages, messageView } from "@/lib/agent-api";
 import { apiError, readJson, requireApiUser } from "@/lib/api-auth";
+import { isStoreReadError } from "@/lib/store-errors";
 import { ChatRejected, enqueueChat } from "@/lib/dispatch-web";
 
 export const dynamic = "force-dynamic";
@@ -21,6 +22,7 @@ export async function GET(request: Request, { params }: Params) {
     return Response.json({ messages });
   } catch (error) {
     console.error("[v1/users/messages GET]", error);
+    if (isStoreReadError(error)) return apiError(503, error.code, error.message);
     return apiError(500, "internal_error", "Could not list messages.");
   }
 }

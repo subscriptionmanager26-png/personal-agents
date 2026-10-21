@@ -4,6 +4,7 @@ import path from "node:path";
 import { Redis } from "@upstash/redis";
 
 import { getConfig } from "@/lib/config";
+import { StoreReadError } from "@/lib/store-errors";
 import { coerceStoreData, emptyStoreData } from "@/lib/store-coerce";
 import type { StoreData } from "@/lib/types";
 
@@ -71,16 +72,22 @@ async function readBlob(): Promise<StoreData> {
       return coerceStoreData(JSON.parse(text));
     } catch (parseError) {
       console.error("[store] corrupt blob JSON", parseError);
-      return emptyStore();
+      throw new StoreReadError("store_read_failed", "Persisted store JSON is corrupt.");
     }
   } catch (error) {
+    if (error instanceof StoreReadError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     // Missing blob is a cold start, not a hard failure.
     if (/not found|404|NoSuchKey|does not exist/i.test(message)) {
       return emptyStore();
     }
     console.error("[store] blob read failed", error);
-    return emptyStore();
+    throw new StoreReadError(
+      "blob_unavailable",
+      /suspended|quota|limit|forbidden|402|403|unauthorized/i.test(message)
+        ? "Blob store is unavailable (billing or quota). Restore Vercel Blob for this project."
+        : `Blob store read failed: ${message}`,
+    );
   }
 }
 
@@ -104,8 +111,9 @@ export async function getStore(): Promise<StoreData> {
     if (blobEnabled()) return readBlob();
     return readLocal();
   } catch (error) {
+    if (error instanceof StoreReadError) throw error;
     console.error("[store] getStore failed", error);
-    return emptyStore();
+    throw new StoreReadError("store_read_failed", error instanceof Error ? error.message : String(error));
   }
 }
 

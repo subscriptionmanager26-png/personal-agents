@@ -1,4 +1,5 @@
 import { authenticateApiKey, getApiUser, isValidExternalId } from "@/lib/company";
+import { isStoreReadError } from "@/lib/store-errors";
 import type { PersonalUser, Workspace } from "@/lib/types";
 
 export function apiError(status: number, code: string, message: string) {
@@ -15,9 +16,16 @@ export function decodeParam(raw: string) {
 
 /** Authenticates the company's API key. */
 export async function requireCompany(request: Request): Promise<{ workspace: Workspace } | { response: Response }> {
-  const workspace = await authenticateApiKey(request.headers.get("authorization"));
-  if (!workspace) return { response: apiError(401, "unauthorized", "Missing or invalid API key.") };
-  return { workspace };
+  try {
+    const workspace = await authenticateApiKey(request.headers.get("authorization"));
+    if (!workspace) return { response: apiError(401, "unauthorized", "Missing or invalid API key.") };
+    return { workspace };
+  } catch (error) {
+    if (isStoreReadError(error)) {
+      return { response: apiError(503, error.code, error.message) };
+    }
+    throw error;
+  }
 }
 
 /** Authenticates the API key and resolves the company's user by its own id. */

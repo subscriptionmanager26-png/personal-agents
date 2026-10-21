@@ -1,4 +1,5 @@
 import { apiError, requireApiUser } from "@/lib/api-auth";
+import { isStoreReadError } from "@/lib/store-errors";
 import { listApiChatThreads } from "@/lib/api-threads";
 
 export const dynamic = "force-dynamic";
@@ -13,6 +14,7 @@ export async function GET(request: Request, { params }: Params) {
     return Response.json({ threads });
   } catch (error) {
     console.error("[v1/users/threads]", error);
+    if (isStoreReadError(error)) return apiError(503, error.code, error.message);
     return apiError(500, "internal_error", "Could not list chat threads.");
   }
 }
