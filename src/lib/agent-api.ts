@@ -45,12 +45,31 @@ export function messageView(job: Job): MessageView {
   };
 }
 
+function safeMessageView(job: Job): MessageView {
+  try {
+    return messageView(job);
+  } catch {
+    return {
+      id: job.id,
+      threadId: job.webThreadId ?? "main",
+      text: job.prompt ?? "",
+      attachments: job.attachments ?? [],
+      status: viewStatus(job),
+      createdAt: job.createdAt,
+      completedAt: job.status === "replied" ? job.reply?.receivedAt : undefined,
+      blocks: [],
+      actions: [],
+      error: job.status === "error" ? clientError(job.error) : undefined,
+    };
+  }
+}
+
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
   const jobs = (await listJobsForUser(ownerUserId, 1000)).filter(
     (j) => j.source === opts.source && (!opts.threadId || (j.webThreadId ?? "main") === opts.threadId),
   );
-  return jobs.slice(0, limit).map(messageView);
+  return jobs.slice(0, limit).map(safeMessageView);
 }
 
 export async function getOwnedMessage(ownerUserId: string, messageId: string) {

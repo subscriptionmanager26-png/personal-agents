@@ -142,11 +142,15 @@ export async function getJob(id: string) {
   return store.jobs.find((j) => j.id === id);
 }
 
+function jobSortTime(job: Job) {
+  return job.updatedAt || job.createdAt || "";
+}
+
 export async function listJobsForUser(ownerUserId: string, limit = 50) {
   const store = await getStore();
   return store.jobs
     .filter((j) => j.ownerUserId === ownerUserId)
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .sort((a, b) => jobSortTime(b).localeCompare(jobSortTime(a)))
     .slice(0, limit);
 }
 

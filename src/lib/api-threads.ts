@@ -15,7 +15,7 @@ export function threadsFromJobs(jobs: Job[], limit = 40): ApiChatThread[] {
   const threads = new Map<string, ApiChatThread>();
   for (const job of jobs) {
     const id = job.webThreadId ?? "main";
-    const at = job.updatedAt || job.createdAt;
+    const at = job.updatedAt || job.createdAt || "";
     const working = ACTIVE.has(job.status);
     const existing = threads.get(id);
     if (!existing) {
@@ -27,19 +27,19 @@ export function threadsFromJobs(jobs: Job[], limit = 40): ApiChatThread[] {
       });
       continue;
     }
-    if (at.localeCompare(existing.updatedAt) > 0) {
+    if (at.localeCompare(existing.updatedAt || "") > 0) {
       existing.updatedAt = at;
       existing.title = threadTitle(job.prompt);
     }
     existing.working ||= working;
   }
   return [...threads.values()]
-    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
     .slice(0, limit);
 }
 
-function threadTitle(prompt: string) {
-  const t = prompt.replace(/\s+/g, " ").trim();
+function threadTitle(prompt: string | undefined) {
+  const t = (prompt ?? "").replace(/\s+/g, " ").trim();
   if (!t) return "New chat";
   return t.length > 72 ? `${t.slice(0, 72)}…` : t;
 }

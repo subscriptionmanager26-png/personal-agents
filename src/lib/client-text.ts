@@ -31,7 +31,8 @@ const REWRITES: [RegExp, string][] = [
   [/ +$/, ""],
 ];
 
-export function clientText(text: string) {
+export function clientText(text: string | undefined | null) {
+  if (!text) return "";
   let out = text.replace(FILE_LINK, "**$1**").replace(FILE_PATH, "$1");
   for (const [pattern, replacement] of REWRITES) out = out.replace(pattern, replacement);
   return out;
