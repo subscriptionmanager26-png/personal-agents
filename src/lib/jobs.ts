@@ -146,6 +146,7 @@ export async function listJobsForUser(ownerUserId: string, limit = 50) {
   const store = await getStore();
   return store.jobs
     .filter((j) => j.ownerUserId === ownerUserId)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, limit);
 }
 
