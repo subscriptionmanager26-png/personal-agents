@@ -4,6 +4,7 @@ import path from "node:path";
 import { Redis } from "@upstash/redis";
 
 import { getConfig } from "@/lib/config";
+import { coerceStoreData, emptyStoreData } from "@/lib/store-coerce";
 import type { StoreData } from "@/lib/types";
 
 const STORE_KEY = "personal-agents:store";
@@ -16,20 +17,7 @@ function localPath() {
   return path.join(root, "store.json");
 }
 
-const emptyStore = (): StoreData => ({
-  users: {},
-  files: {},
-  workspaces: {},
-  memories: {},
-  vaultItems: {},
-  connections: {},
-  orders: {},
-  jobs: [],
-  slackThreads: {},
-  slackInstalls: {},
-  processedSlackMessages: [],
-  auditEvents: [],
-});
+const emptyStore = emptyStoreData;
 
 let redisClient: Redis | null | undefined;
 let queue: Promise<unknown> = Promise.resolve();
@@ -55,7 +43,7 @@ export function getRedis(): Redis | null {
 async function readLocal(): Promise<StoreData> {
   try {
     const raw = await fs.readFile(localPath(), "utf8");
-    return { ...emptyStore(), ...(JSON.parse(raw) as StoreData) };
+    return coerceStoreData(JSON.parse(raw));
   } catch {
     return emptyStore();
   }
@@ -79,15 +67,20 @@ async function readBlob(): Promise<StoreData> {
     }
     const text = await new Response(result.stream).text();
     if (!text.trim()) return emptyStore();
-    const parsed = JSON.parse(text) as StoreData;
-    return { ...emptyStore(), ...parsed };
+    try {
+      return coerceStoreData(JSON.parse(text));
+    } catch (parseError) {
+      console.error("[store] corrupt blob JSON", parseError);
+      return emptyStore();
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     // Missing blob is a cold start, not a hard failure.
     if (/not found|404|NoSuchKey|does not exist/i.test(message)) {
       return emptyStore();
     }
-    throw error;
+    console.error("[store] blob read failed", error);
+    return emptyStore();
   }
 }
 
@@ -102,13 +95,18 @@ async function writeBlob(data: StoreData) {
 }
 
 export async function getStore(): Promise<StoreData> {
-  const redis = getRedis();
-  if (redis) {
-    const data = await redis.get<StoreData>(STORE_KEY);
-    return data ? { ...emptyStore(), ...data } : emptyStore();
+  try {
+    const redis = getRedis();
+    if (redis) {
+      const data = await redis.get<StoreData>(STORE_KEY);
+      return data ? coerceStoreData(data) : emptyStore();
+    }
+    if (blobEnabled()) return readBlob();
+    return readLocal();
+  } catch (error) {
+    console.error("[store] getStore failed", error);
+    return emptyStore();
   }
-  if (blobEnabled()) return readBlob();
-  return readLocal();
 }
 
 export async function updateStore<T>(

@@ -14,6 +14,7 @@ const ACTIVE = new Set(["queued", "dispatched", "delivering"]);
 export function threadsFromJobs(jobs: Job[], limit = 40): ApiChatThread[] {
   const threads = new Map<string, ApiChatThread>();
   for (const job of jobs) {
+    if (!job || typeof job !== "object") continue;
     const id = job.webThreadId ?? "main";
     const at = job.updatedAt || job.createdAt || "";
     const working = ACTIVE.has(job.status);

@@ -143,13 +143,15 @@ export async function getJob(id: string) {
 }
 
 function jobSortTime(job: Job) {
-  return job.updatedAt || job.createdAt || "";
+  const t = job.updatedAt || job.createdAt;
+  return typeof t === "string" ? t : "";
 }
 
 export async function listJobsForUser(ownerUserId: string, limit = 50) {
   const store = await getStore();
-  return store.jobs
-    .filter((j) => j.ownerUserId === ownerUserId)
+  const jobs = Array.isArray(store.jobs) ? store.jobs : [];
+  return jobs
+    .filter((j): j is Job => Boolean(j && typeof j === "object" && j.ownerUserId === ownerUserId))
     .sort((a, b) => jobSortTime(b).localeCompare(jobSortTime(a)))
     .slice(0, limit);
 }
