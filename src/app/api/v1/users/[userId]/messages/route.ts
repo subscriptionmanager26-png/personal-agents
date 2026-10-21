@@ -7,17 +7,22 @@ export const dynamic = "force-dynamic";
 type Params = { params: Promise<{ userId: string }> };
 
 export async function GET(request: Request, { params }: Params) {
-  const auth = await requireApiUser(request, (await params).userId);
-  if ("response" in auth) return auth.response;
-  const url = new URL(request.url);
-  const threadId = url.searchParams.get("threadId") || undefined;
-  if (threadId && !isValidThreadId(threadId)) return apiError(400, "invalid_thread_id", "Invalid threadId.");
-  const messages = await listMessages(auth.user.id, {
-    threadId,
-    limit: Number(url.searchParams.get("limit")) || undefined,
-    source: "api",
-  });
-  return Response.json({ messages });
+  try {
+    const auth = await requireApiUser(request, (await params).userId);
+    if ("response" in auth) return auth.response;
+    const url = new URL(request.url);
+    const threadId = url.searchParams.get("threadId") || undefined;
+    if (threadId && !isValidThreadId(threadId)) return apiError(400, "invalid_thread_id", "Invalid threadId.");
+    const messages = await listMessages(auth.user.id, {
+      threadId,
+      limit: Number(url.searchParams.get("limit")) || undefined,
+      source: "api",
+    });
+    return Response.json({ messages });
+  } catch (error) {
+    console.error("[v1/users/messages GET]", error);
+    return apiError(500, "internal_error", "Could not list messages.");
+  }
 }
 
 /** Send a message; the reply arrives on the message's event stream. */
