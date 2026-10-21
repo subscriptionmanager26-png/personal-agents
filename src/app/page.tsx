@@ -1,19 +1,36 @@
+import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { AuthForm, AuthPage } from "@/components/auth-form";
+import { SaffronLanding } from "@/components/saffron/saffron-landing";
 import { getSession } from "@/lib/session";
-import { isAdminHost } from "@/lib/site-mode";
+import { isAdminHost, isSaffronHost } from "@/lib/site-mode";
+
+export async function generateMetadata(): Promise<Metadata> {
+  const host = (await headers()).get("host");
+  if (!isSaffronHost(host)) {
+    return {};
+  }
+  return {
+    title: "Saffron AI",
+    description: "Futuristic intelligence at the edge of the horizon.",
+  };
+}
 
 export default async function HomePage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  const host = (await headers()).get("host");
+  if (isSaffronHost(host)) {
+    return <SaffronLanding />;
+  }
+
   const session = await getSession();
   if (session) redirect("/app");
 
-  const host = (await headers()).get("host");
   const admin = isAdminHost(host);
   const params = await searchParams;
   const error = typeof params.error === "string" ? params.error : "";

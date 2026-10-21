@@ -2,24 +2,24 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { sha256 } from "@/lib/crypto";
+import { activeStoreBackend, blobStoreConfigured } from "@/lib/store-backend";
 import { getRedis } from "@/lib/store";
 
-/** Raw uploads and extracted content: Vercel Blob, Upstash (prod), or .data/files locally. */
-
-function blobEnabled() {
-  return Boolean(process.env.BLOB_READ_WRITE_TOKEN?.trim() || process.env.BLOB_STORE_ID?.trim());
-}
-
-function redisObjectKey(key: string) {
-  return `personal-agents:file:${key}`;
-}
+/** Raw uploads and extracted content: Upstash (preferred), Vercel Blob, or .data/files locally. */
 
 export function fileStorageAvailable() {
-  return blobEnabled() || Boolean(getRedis()) || !process.env.VERCEL;
+  const backend = activeStoreBackend();
+  if (backend === "redis") return Boolean(getRedis());
+  if (backend === "blob") return blobStoreConfigured();
+  return !process.env.VERCEL;
 }
 
 function localRoot() {
   return path.join(process.env.PERSONAL_AGENTS_DATA_DIR?.trim() || path.join(process.cwd(), ".data"), "files");
+}
+
+function redisObjectKey(key: string) {
+  return `personal-agents:file:${key}`;
 }
 
 /** Storage key for one file's object; owner ids are hashed so they never appear in paths. */
@@ -27,29 +27,49 @@ export function fileKey(ownerUserId: string, fileId: string, part: "raw" | "extr
   return `personal-agents/files/${sha256(ownerUserId).toString("hex").slice(0, 32)}/${fileId}/${part}`;
 }
 
+async function putRedis(key: string, data: Buffer | string, contentType: string) {
+  const redis = getRedis();
+  if (!redis) throw new Error("Redis file storage is not available.");
+  const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : data;
+  await redis.set(redisObjectKey(key), {
+    contentType,
+    b64: bytes.toString("base64"),
+  });
+}
+
+async function getRedisObject(key: string): Promise<Buffer | undefined> {
+  const redis = getRedis();
+  if (!redis) return undefined;
+  const row = await redis.get<{ b64?: string }>(redisObjectKey(key));
+  if (!row?.b64) return undefined;
+  return Buffer.from(row.b64, "base64");
+}
+
 export async function putObject(key: string, data: Buffer | string, contentType: string) {
-  if (blobEnabled()) {
+  const backend = activeStoreBackend();
+  if (backend === "redis") {
+    await putRedis(key, data, contentType);
+    return;
+  }
+  if (backend === "blob") {
     const { put } = await import("@vercel/blob");
     await put(key, data, { access: "private", addRandomSuffix: false, allowOverwrite: true, contentType });
     return;
   }
-  const redis = getRedis();
-  if (redis) {
-    const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : data;
-    await redis.set(redisObjectKey(key), {
-      contentType,
-      b64: bytes.toString("base64"),
-    });
-    return;
+  if (process.env.VERCEL) {
+    throw new Error(
+      "File storage is not configured. Add Upstash Redis (recommended) or enable Blob on this project.",
+    );
   }
-  if (process.env.VERCEL) throw new Error("File storage is not configured (set up Vercel Blob or Upstash Redis).");
   const file = path.join(localRoot(), key);
   await fs.mkdir(path.dirname(file), { recursive: true });
   await fs.writeFile(file, data);
 }
 
 export async function getObject(key: string): Promise<Buffer | undefined> {
-  if (blobEnabled()) {
+  const backend = activeStoreBackend();
+  if (backend === "redis") return getRedisObject(key);
+  if (backend === "blob") {
     const { get } = await import("@vercel/blob");
     try {
       const result = await get(key, { access: "private", useCache: false });
@@ -58,12 +78,6 @@ export async function getObject(key: string): Promise<Buffer | undefined> {
     } catch {
       return undefined;
     }
-  }
-  const redis = getRedis();
-  if (redis) {
-    const row = await redis.get<{ b64?: string }>(redisObjectKey(key));
-    if (!row?.b64) return undefined;
-    return Buffer.from(row.b64, "base64");
   }
   try {
     return await fs.readFile(path.join(localRoot(), key));
@@ -74,14 +88,15 @@ export async function getObject(key: string): Promise<Buffer | undefined> {
 
 export async function deleteObjects(keys: string[]) {
   if (!keys.length) return;
-  if (blobEnabled()) {
-    const { del } = await import("@vercel/blob");
-    await del(keys).catch(() => undefined);
+  const backend = activeStoreBackend();
+  if (backend === "redis") {
+    const redis = getRedis();
+    if (redis) await Promise.all(keys.map((k) => redis.del(redisObjectKey(k))));
     return;
   }
-  const redis = getRedis();
-  if (redis) {
-    await Promise.all(keys.map((k) => redis.del(redisObjectKey(k))));
+  if (backend === "blob") {
+    const { del } = await import("@vercel/blob");
+    await del(keys).catch(() => undefined);
     return;
   }
   await Promise.all(keys.map((k) => fs.rm(path.join(localRoot(), k), { force: true })));

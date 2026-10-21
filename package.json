@@ -9,7 +9,8 @@
     "lint": "eslint",
     "test": "npx tsx --tsconfig tsconfig.json --test src/lib/*.test.ts",
     "seed:company": "npx tsx --tsconfig tsconfig.json scripts/seed-demo-company.ts",
-    "seed:pocketedge": "npx tsx --tsconfig tsconfig.json scripts/seed-pocketedge.ts"
+    "seed:pocketedge": "npx tsx --tsconfig tsconfig.json scripts/seed-pocketedge.ts",
+    "migrate-store-to-redis": "npx tsx --tsconfig tsconfig.json scripts/migrate-store-to-redis.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",

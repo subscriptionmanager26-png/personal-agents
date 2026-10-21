@@ -4,6 +4,7 @@ import path from "node:path";
 import { Redis } from "@upstash/redis";
 
 import { getConfig } from "@/lib/config";
+import { activeStoreBackend, blobStoreConfigured } from "@/lib/store-backend";
 import { StoreReadError } from "@/lib/store-errors";
 import { coerceStoreData, emptyStoreData } from "@/lib/store-coerce";
 import type { StoreData } from "@/lib/types";
@@ -22,13 +23,6 @@ const emptyStore = emptyStoreData;
 
 let redisClient: Redis | null | undefined;
 let queue: Promise<unknown> = Promise.resolve();
-
-function blobEnabled() {
-  return Boolean(
-    process.env.BLOB_READ_WRITE_TOKEN?.trim() ||
-      process.env.BLOB_STORE_ID?.trim(),
-  );
-}
 
 export function getRedis(): Redis | null {
   if (redisClient !== undefined) return redisClient;
@@ -103,12 +97,16 @@ async function writeBlob(data: StoreData) {
 
 export async function getStore(): Promise<StoreData> {
   try {
-    const redis = getRedis();
-    if (redis) {
+    const backend = activeStoreBackend();
+    if (backend === "redis") {
+      const redis = getRedis();
+      if (!redis) {
+        throw new StoreReadError("store_read_failed", "Redis store is configured but the client failed to initialize.");
+      }
       const data = await redis.get<StoreData>(STORE_KEY);
       return data ? coerceStoreData(data) : emptyStore();
     }
-    if (blobEnabled()) return readBlob();
+    if (backend === "blob") return readBlob();
     return readLocal();
   } catch (error) {
     if (error instanceof StoreReadError) throw error;
@@ -121,12 +119,14 @@ export async function updateStore<T>(
   fn: (store: StoreData) => T | Promise<T>,
 ): Promise<T> {
   const run = async () => {
-    const redis = getRedis();
+    const backend = activeStoreBackend();
     const current = await getStore();
     const result = await fn(current);
-    if (redis) {
+    if (backend === "redis") {
+      const redis = getRedis();
+      if (!redis) throw new StoreReadError("store_read_failed", "Redis client unavailable during write.");
       await redis.set(STORE_KEY, current);
-    } else if (blobEnabled()) {
+    } else if (backend === "blob") {
       await writeBlob(current);
     } else {
       await writeLocal(current);
@@ -143,7 +143,5 @@ export async function updateStore<T>(
 }
 
 export function activeBackend() {
-  if (getRedis()) return "redis";
-  if (blobEnabled()) return "blob";
-  return "file";
+  return activeStoreBackend();
 }

@@ -67,7 +67,7 @@ function safeMessageView(job: Job): MessageView {
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
   const jobs = (await listJobsForUser(ownerUserId, 1000)).filter(
-    (j) => j.source === opts.source && (!opts.threadId || (j.webThreadId ?? "main") === opts.threadId),
+    (j) => j && j.source === opts.source && (!opts.threadId || (j.webThreadId ?? "main") === opts.threadId),
   );
   return jobs.slice(0, limit).map(safeMessageView);
 }
