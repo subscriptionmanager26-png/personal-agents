@@ -1,0 +1,126 @@
+@keyframes saffron-orbit-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+
+@keyframes saffron-scroll-cue {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translate(-50%, 0);
+  }
+  50% {
+    opacity: 0.85;
+    transform: translate(-50%, 8px);
+  }
+}
+
+@keyframes saffron-data-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes saffron-line-in {
+  from {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes saffron-cursor-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.saffron-root .saffron-scroll-cue {
+  animation: saffron-scroll-cue 3s ease-in-out infinite;
+}
+
+.saffron-root .saffron-data-marquee {
+  animation: saffron-data-marquee 38s linear infinite;
+}
+
+.saffron-root .saffron-line-in {
+  animation: saffron-line-in 0.45s ease-out;
+}
+
+.saffron-root .saffron-cursor {
+  animation: saffron-cursor-blink 1s step-end infinite;
+}
+
+.saffron-root .saffron-vignette {
+  background: radial-gradient(ellipse 85% 75% at 50% 40%, transparent 35%, rgba(0, 0, 0, 0.55) 100%);
+}
+
+.saffron-root .saffron-scanlines {
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(255, 255, 255, 0.03) 2px,
+    rgba(255, 255, 255, 0.03) 3px
+  );
+}
+
+@keyframes saffron-prism-pulse {
+  0%,
+  100% {
+    opacity: 0.65;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.saffron-root .saffron-prism-pulse {
+  animation: saffron-prism-pulse 16s ease-in-out infinite;
+}
+
+.saffron-root .saffron-chromatic {
+  text-shadow:
+    0.5px 0 0 rgba(255, 100, 80, 0.12),
+    -0.5px 0 0 rgba(80, 160, 255, 0.12);
+}
+
+.saffron-root .saffron-cta {
+  transition:
+    transform 0.35s ease,
+    box-shadow 0.35s ease,
+    border-color 0.35s ease;
+}
+
+.saffron-root .saffron-cta:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 16px 48px rgba(255, 255, 255, 0.12);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .saffron-root .saffron-scroll-cue,
+  .saffron-root .saffron-data-marquee,
+  .saffron-root .saffron-cursor {
+    animation: none;
+  }
+
+  .saffron-root .saffron-cta:hover {
+    transform: none;
+  }
+}

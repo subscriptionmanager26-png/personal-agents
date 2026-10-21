@@ -13,8 +13,8 @@ export async function generateMetadata(): Promise<Metadata> {
     return {};
   }
   return {
-    title: "Saffron AI",
-    description: "Futuristic intelligence at the edge of the horizon.",
+    title: "SaffronAI",
+    description: "Hire and train AI employees. Plug-and-play infrastructure for AI-native websites.",
   };
 }
 
@@ -28,11 +28,15 @@ export default async function HomePage({
     return <SaffronLanding />;
   }
 
+  const params = await searchParams;
+  if (process.env.NODE_ENV === "development" && params.preview === "saffron") {
+    return <SaffronLanding />;
+  }
+
   const session = await getSession();
   if (session) redirect("/app");
 
   const admin = isAdminHost(host);
-  const params = await searchParams;
   const error = typeof params.error === "string" ? params.error : "";
   const mode = admin || params.mode !== "signup" ? "login" : "signup";
 
