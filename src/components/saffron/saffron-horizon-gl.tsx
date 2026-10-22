@@ -29,7 +29,7 @@ float starfield(vec2 uv, float t) {
 
 void main() {
   vec2 uv = (gl_FragCoord.xy - 0.5 * u_res) / u_res.y;
-  vec2 bh = uv - vec2(0.0, -0.02);
+  vec2 bh = uv - vec2(0.0, 0.2);
   float r = length(bh);
   float ang = atan(bh.y, bh.x);
 
@@ -50,37 +50,29 @@ void main() {
   float hump = exp(-pow(abs(bh.y) - 0.32, 2.0) * 28.0);
   diskCol += mix(vec3(0.95, 0.78, 0.5), vec3(0.45, 0.72, 1.0), step(0.0, bh.y)) * hump * smoothstep(0.22, 0.5, r) * 0.55;
 
-  // Thin photon sphere (gravitational lensing): bright ring + fainter secondary
-  float ring(float r0, float w, float a) {
-    float inner = smoothstep(r0 - w, r0 - w * 0.35, r);
-    float outer = smoothstep(r0 + w, r0 + w * 0.35, r);
-    return (inner * (1.0 - outer)) * a;
-  }
   float photon = 0.0;
-  photon += ring(0.172, 0.0048, 1.0);
-  photon += ring(0.171, 0.0016, 0.35);
-  photon += ring(0.158, 0.0032, 0.42);
-  photon += ring(0.146, 0.0024, 0.18);
+  photon += smoothstep(0.166, 0.172, r) * smoothstep(0.188, 0.178, r);
+  photon += smoothstep(0.152, 0.156, r) * smoothstep(0.164, 0.158, r) * 0.5;
+  photon += smoothstep(0.138, 0.142, r) * smoothstep(0.148, 0.144, r) * 0.22;
 
-  // Einstein arcs: lensed disk light above/below the shadow
   float arcR = 0.34;
   float arcBand = exp(-pow(abs(length(vec2(bh.x, abs(bh.y))) - arcR), 2.0) * 220.0);
   arcBand *= smoothstep(0.11, 0.14, abs(bh.y));
   arcBand *= smoothstep(0.2, 0.55, r);
-  vec3 arcCol = mix(vec3(0.42, 0.7, 1.0), vec3(1.0, 0.68, 0.38), doppler) * arcBand * 0.55;
+  vec3 arcCol = mix(vec3(0.42, 0.7, 1.0), vec3(1.0, 0.68, 0.38), doppler) * arcBand * 0.4;
 
-  float shadow = smoothstep(0.094, 0.118, r);
-  float core = 1.0 - smoothstep(0.0, 0.102, r);
+  float shadow = smoothstep(0.098, 0.122, r);
+  float core = 1.0 - smoothstep(0.0, 0.105, r);
 
   col += diskCol * (1.0 - core);
   col += arcCol * (1.0 - core);
-  col += photon * vec3(1.0, 0.92, 0.78) * (1.0 - core * 0.9);
-  col += photon * vec3(1.0, 0.75, 0.45) * 0.22 * (1.0 - core);
-  col *= 1.0 - shadow * 0.99;
+  col += photon * vec3(1.0, 0.88, 0.62) * 1.85 * (1.0 - core * 0.75);
+  col += photon * vec3(1.0, 0.72, 0.38) * 0.35 * (1.0 - core);
+  col *= 1.0 - shadow * 0.98;
   col = mix(col, vec3(0.0), core);
 
-  float lensGlow = exp(-pow(r - 0.17, 2.0) * 900.0) * 0.14;
-  col += lensGlow * vec3(1.0, 0.85, 0.62) * (1.0 - core);
+  float lensGlow = exp(-pow(r - 0.172, 2.0) * 520.0) * 0.22;
+  col += lensGlow * vec3(1.0, 0.82, 0.55) * (1.0 - core);
   col += exp(-r * 2.35) * vec3(0.88, 0.52, 0.34) * 0.05;
   col *= 1.0 - dot(uv * vec2(1.0, 0.85), uv * vec2(1.0, 0.85)) * 0.42;
 
@@ -149,8 +141,11 @@ export function SaffronHorizonGl() {
 
     draw();
     window.addEventListener("resize", draw);
+    const ro = new ResizeObserver(() => draw());
+    ro.observe(canvas);
 
     return () => {
+      ro.disconnect();
       window.removeEventListener("resize", draw);
       gl.deleteProgram(program);
       gl.deleteShader(vs);

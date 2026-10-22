@@ -8,7 +8,7 @@ import { SaffronReveal } from "@/components/saffron/saffron-reveal";
 const PILLARS = [
   {
     title: "Hire AI employees",
-    body: "Role-specific agents with memory, tools, and guardrails — onboarded like teammates, not one-off chats.",
+    body: "Role-specific agents with memory, tools, and guardrails, onboarded like teammates, not one-off chats.",
   },
   {
     title: "Train on your business",
@@ -16,11 +16,11 @@ const PILLARS = [
   },
   {
     title: "Plug-and-play infrastructure",
-    body: "Multi-tenant runtime, vault secrets, APIs, and ops tooling — ready to run in production.",
+    body: "Multi-tenant runtime, vault secrets, APIs, and ops tooling, ready to run in production.",
   },
   {
     title: "AI-native websites",
-    body: "Composable surfaces where agents, memory, and live data ship as part of the product — not bolted on.",
+    body: "Composable surfaces where agents, memory, and live data ship as part of the product, not bolted on.",
   },
 ] as const;
 
@@ -47,7 +47,7 @@ export function SaffronExperience() {
                   <span className="font-medium text-white/85">
                     hire and train
                   </span>{" "}
-                  AI employees — and ship{" "}
+                  AI employees, and ship{" "}
                   <span className="font-medium text-white/85">AI-native</span> websites on plug-and-play
                   infrastructure.
                 </p>
@@ -61,7 +61,7 @@ export function SaffronExperience() {
 
             <SaffronReveal delayMs={80}>
               <p className="mt-8 max-w-xl text-base leading-relaxed text-white/45 md:mt-10 md:text-lg">
-                Plus plug-and-play infrastructure to launch AI-native websites — agents, memory, and production
+                Plus plug-and-play infrastructure to launch AI-native websites: agents, memory, and production
                 stack included.
               </p>
             </SaffronReveal>
@@ -95,7 +95,7 @@ export function SaffronExperience() {
               </SaffronReveal>
               <SaffronReveal delayMs={100}>
                 <p className="text-base leading-relaxed text-white/50 md:text-lg">
-                  SaffronAI enables companies to hire and train AI employees — scoped to roles, connected to your
+                  SaffronAI enables companies to hire and train AI employees, scoped to roles, connected to your
                   systems, and accountable to your standards. We also provide plug-and-play infrastructure so you
                   can ship AI-native websites and customer experiences without rebuilding the stack from scratch.
                 </p>
