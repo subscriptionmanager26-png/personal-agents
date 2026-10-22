@@ -4,6 +4,7 @@ import "./saffron-styles.css";
 
 import { SaffronChrome } from "@/components/saffron/saffron-chrome";
 import { SaffronHorizonGl } from "@/components/saffron/saffron-horizon-gl";
+import { SaffronHorizonRing } from "@/components/saffron/saffron-horizon-ring";
 import { SaffronReveal } from "@/components/saffron/saffron-reveal";
 const PILLARS = [
   {
@@ -35,7 +36,8 @@ export function SaffronExperience() {
   return (
     <div className="saffron-root relative min-h-screen overflow-x-hidden bg-black font-sans text-white antialiased selection:bg-white/20">
       <SaffronHorizonGl />
-      <div className="pointer-events-none fixed inset-0 z-[1] bg-gradient-to-b from-transparent via-transparent to-black/80" aria-hidden />
+      <SaffronHorizonRing />
+      <div className="pointer-events-none fixed inset-0 z-[2] bg-gradient-to-b from-transparent via-black/20 to-black/85" aria-hidden />
 
       <SaffronChrome>
         <main className="relative z-10">

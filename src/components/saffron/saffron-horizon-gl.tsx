@@ -61,20 +61,25 @@ void main() {
   arcBand *= smoothstep(0.2, 0.55, r);
   vec3 arcCol = mix(vec3(0.42, 0.7, 1.0), vec3(1.0, 0.68, 0.38), doppler) * arcBand * 0.4;
 
-  float shadow = smoothstep(0.098, 0.122, r);
-  float core = 1.0 - smoothstep(0.0, 0.105, r);
+  float core = 1.0 - smoothstep(0.0, 0.108, r);
+  float innerDark = smoothstep(0.13, 0.09, r);
 
   col += diskCol * (1.0 - core);
   col += arcCol * (1.0 - core);
-  col += photon * vec3(1.0, 0.88, 0.62) * 1.85 * (1.0 - core * 0.75);
-  col += photon * vec3(1.0, 0.72, 0.38) * 0.35 * (1.0 - core);
-  col *= 1.0 - shadow * 0.98;
+  col *= mix(1.0, 0.12, innerDark * 0.92);
   col = mix(col, vec3(0.0), core);
 
-  float lensGlow = exp(-pow(r - 0.172, 2.0) * 520.0) * 0.22;
-  col += lensGlow * vec3(1.0, 0.82, 0.55) * (1.0 - core);
-  col += exp(-r * 2.35) * vec3(0.88, 0.52, 0.34) * 0.05;
-  col *= 1.0 - dot(uv * vec2(1.0, 0.85), uv * vec2(1.0, 0.85)) * 0.42;
+  float ringGlow =
+    exp(-pow((r - 0.174) / 0.012, 2.0)) * 1.35 +
+    exp(-pow((r - 0.174) / 0.028, 2.0)) * 0.55 +
+    photon * 1.2;
+  vec3 ringCol = vec3(1.0, 0.78, 0.45) * ringGlow + vec3(1.0, 0.95, 0.82) * ringGlow * 0.45;
+  col += ringCol * (1.0 - core);
+
+  col += exp(-r * 2.35) * vec3(0.88, 0.52, 0.34) * 0.06;
+
+  float vig = dot(uv * vec2(1.0, 0.82), uv * vec2(1.0, 0.82));
+  col *= 1.0 - vig * 0.32;
 
   gl_FragColor = vec4(col, 1.0);
 }
@@ -154,5 +159,5 @@ export function SaffronHorizonGl() {
     };
   }, []);
 
-  return <canvas ref={canvasRef} className="fixed inset-0 h-full w-full" aria-hidden />;
+  return <canvas ref={canvasRef} className="fixed inset-0 z-0 h-full w-full" aria-hidden />;
 }
