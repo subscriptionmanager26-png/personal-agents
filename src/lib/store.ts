@@ -4,9 +4,10 @@ import path from "node:path";
 import { Redis } from "@upstash/redis";
 
 import { getConfig } from "@/lib/config";
-import { activeStoreBackend, blobStoreConfigured } from "@/lib/store-backend";
+import { activeStoreBackend } from "@/lib/store-backend";
 import { StoreReadError } from "@/lib/store-errors";
 import { coerceStoreData, emptyStoreData } from "@/lib/store-coerce";
+import { readSupabaseStore, writeSupabaseStore } from "@/lib/store-supabase";
 import type { StoreData } from "@/lib/types";
 
 const STORE_KEY = "personal-agents:store";
@@ -106,6 +107,7 @@ export async function getStore(): Promise<StoreData> {
       const data = await redis.get<StoreData>(STORE_KEY);
       return data ? coerceStoreData(data) : emptyStore();
     }
+    if (backend === "supabase") return readSupabaseStore();
     if (backend === "blob") return readBlob();
     return readLocal();
   } catch (error) {
@@ -126,6 +128,8 @@ export async function updateStore<T>(
       const redis = getRedis();
       if (!redis) throw new StoreReadError("store_read_failed", "Redis client unavailable during write.");
       await redis.set(STORE_KEY, current);
+    } else if (backend === "supabase") {
+      await writeSupabaseStore(current);
     } else if (backend === "blob") {
       await writeBlob(current);
     } else {

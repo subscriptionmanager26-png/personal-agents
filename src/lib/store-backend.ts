@@ -1,6 +1,7 @@
 import { getConfig } from "@/lib/config";
+import { supabaseStoreConfigured } from "@/lib/supabase-admin";
 
-export type StoreBackend = "redis" | "blob" | "file";
+export type StoreBackend = "redis" | "supabase" | "blob" | "file";
 
 function envFlag(name: string) {
   const v = process.env[name]?.trim().toLowerCase();
@@ -27,9 +28,12 @@ export function blobStoreConfigured() {
 /** Which persistence layer `getStore` / `updateStore` and file bytes use. */
 export function activeStoreBackend(): StoreBackend {
   const forced = process.env.PERSONAL_AGENTS_STORE?.trim().toLowerCase();
-  if (forced === "redis" || forced === "blob" || forced === "file") {
+  if (forced === "redis" || forced === "supabase" || forced === "blob" || forced === "file") {
     if (forced === "redis" && !redisConfigured()) {
       throw new Error("PERSONAL_AGENTS_STORE=redis but Upstash/KV env vars are missing.");
+    }
+    if (forced === "supabase" && !supabaseStoreConfigured()) {
+      throw new Error("PERSONAL_AGENTS_STORE=supabase but Supabase URL + service role key are missing.");
     }
     if (forced === "blob" && !blobStoreConfigured()) {
       throw new Error("PERSONAL_AGENTS_STORE=blob but Blob is not configured or is disabled.");
@@ -37,6 +41,7 @@ export function activeStoreBackend(): StoreBackend {
     return forced;
   }
   if (redisConfigured()) return "redis";
+  if (supabaseStoreConfigured()) return "supabase";
   if (blobStoreConfigured()) return "blob";
   return "file";
 }

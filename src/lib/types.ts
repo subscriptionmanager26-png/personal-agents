@@ -275,6 +275,21 @@ export type SlackThreadRef = {
   threadTs: string;
   lastJobId?: string;
   updatedAt: string;
+  /** One Cursor cloud agent per Slack thread. */
+  cursorAgentId?: string;
+  cursorAgentSkillsHash?: string;
+};
+
+/** Web / API chat thread — each thread owns one Cursor agent. */
+export type WebThread = {
+  id: string;
+  ownerUserId: string;
+  source: "web" | "api";
+  title: string;
+  cursorAgentId?: string;
+  cursorAgentSkillsHash?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type SlackWorkspaceInstall = {
@@ -340,6 +355,7 @@ export type StoreData = {
   connections: Record<string, McpConnection[]>;
   orders: Record<string, OrderProposal[]>;
   jobs: Job[];
+  webThreads: Record<string, WebThread>;
   slackThreads: Record<string, SlackThreadRef>;
   slackInstalls: Record<string, SlackWorkspaceInstall>;
   processedSlackMessages: string[];

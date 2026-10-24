@@ -1,6 +1,7 @@
 import { messageView } from "@/lib/agent-api";
 import { clientText } from "@/lib/client-text";
 import { listJobsForUser } from "@/lib/jobs";
+import { listWebThreadsForUser } from "@/lib/web-threads";
 import type { ActionRequired, Job, JobAttachment, UiBlock } from "@/lib/types";
 
 export type ChatThread = { id: string; title: string; updatedAt: string; working: boolean };
@@ -26,22 +27,10 @@ function webJobs(jobs: Job[]) {
   return jobs.filter((j) => (j.source ?? "web") === "web");
 }
 
-/** Web chat conversations, most recent first; titled by their first message. */
+/** Web chat conversations, most recent first (one Cursor agent per thread). */
 export async function listChatThreads(ownerUserId: string, limit = 40): Promise<ChatThread[]> {
   const jobs = webJobs(await listJobsForUser(ownerUserId, 400));
-  const threads = new Map<string, ChatThread>();
-  for (const job of jobs) {
-    const id = job.webThreadId ?? "main";
-    const existing = threads.get(id);
-    const title = job.prompt.replace(/\s+/g, " ").trim().slice(0, 80) || "New chat";
-    if (!existing) {
-      threads.set(id, { id, title, updatedAt: job.createdAt, working: ACTIVE.has(job.status) });
-    } else {
-      existing.title = title;
-      existing.working ||= ACTIVE.has(job.status);
-    }
-  }
-  return [...threads.values()].slice(0, limit);
+  return listWebThreadsForUser(ownerUserId, "web", jobs, limit);
 }
 
 /** Messages of one web thread, oldest first. */

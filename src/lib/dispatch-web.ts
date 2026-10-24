@@ -43,9 +43,16 @@ export async function enqueueChat(input: {
       "not_allowed",
     );
   }
-  const recent = await listJobsForUser(input.user.id, 5);
-  if (recent.some((j) => ACTIVE.has(j.status))) {
-    throw new ChatRejected("Your agent is still working on the previous message.", "busy");
+  const threadId = input.threadId || "main";
+  const recent = await listJobsForUser(input.user.id, 30);
+  const busyInThread = recent.some(
+    (j) =>
+      ACTIVE.has(j.status) &&
+      (j.source ?? "web") === input.source &&
+      (j.webThreadId ?? "main") === threadId,
+  );
+  if (busyInThread) {
+    throw new ChatRejected("Your agent is still working on the previous message in this chat.", "busy");
   }
 
   let user = input.user;
@@ -60,7 +67,7 @@ export async function enqueueChat(input: {
   const job = await createJob({
     ownerUserId: user.id,
     source: input.source,
-    webThreadId: input.threadId || "main",
+    webThreadId: threadId,
     prompt: text,
     attachments: resolved.files.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
   });

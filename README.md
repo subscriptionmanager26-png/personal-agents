@@ -45,7 +45,10 @@ Without `CURSOR_API_KEY`, dispatch runs in **mock Cursor** mode so you can exerc
 2. **Cursor** — set `CURSOR_API_KEY`. Optionally set `CURSOR_STATUS_WEBHOOK_SECRET` and point status webhooks at `{PUBLIC_URL}/api/cursor/status`. Poll backup: `GET /api/cursor/poll` with `CRON_SECRET`.
 3. **GitHub** — `GITHUB_TOKEN` to auto-create private personal agent repos. Optional `GITHUB_ORG`. Optional `AGENT_TEMPLATE_REPO`.
 4. **Operators** — optional `OPERATOR_EMAILS` (comma-separated) to restrict `/app/admin`.
-5. **Store** — **Upstash Redis** (recommended on Vercel; add the Upstash integration on the `personal-agents` project). Set `PERSONAL_AGENTS_STORE=redis` and `PERSONAL_AGENTS_DISABLE_BLOB=1` so suspended Blob billing cannot blank your API keys. Migrate once with `npx tsx --env-file=.env.local scripts/migrate-store-to-redis.ts`. Local dev uses `.data/store.json`.
+5. **Store** — pick one durable backend (see [`docs/storage-options.md`](docs/storage-options.md)):
+   - **Upstash Redis** — Vercel → Upstash integration → `PERSONAL_AGENTS_STORE=redis`, `PERSONAL_AGENTS_DISABLE_BLOB=1`, then `npm run migrate-store-to-redis`.
+   - **Supabase** — reuse Pocketedge’s project or a new free project: run `scripts/supabase-store-migration.sql`, set `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`, `PERSONAL_AGENTS_STORE=supabase`, `PERSONAL_AGENTS_DISABLE_BLOB=1`, then `npm run migrate-store-to-supabase`.
+   - Local dev uses `.data/store.json` when no cloud backend is configured.
 
 ### Optional Slack
 

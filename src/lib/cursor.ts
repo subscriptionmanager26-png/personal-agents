@@ -20,7 +20,8 @@ import { buildPersonalAgentPrompt } from "@/lib/prompt";
 import { createMemoryToken } from "@/lib/run-token";
 import { runtimeFor, runtimeForUserId, type AgentRuntime } from "@/lib/runtime";
 import { createVaultJobToken, listVaultLabels } from "@/lib/vault";
-import { getUser, updateUser } from "@/lib/users";
+import { agentBindingForJob, mockAgentIdForJob, saveAgentBindingForJob } from "@/lib/thread-agents";
+import { getUser } from "@/lib/users";
 import { canUseAgent, getWorkspace, skillsHash } from "@/lib/workspaces";
 import type { Job, PersonalUser, Workspace } from "@/lib/types";
 
@@ -114,11 +115,12 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   const rt = runtimeFor(workspace);
 
   if (!rt.cursorApiKey) {
-    const mockId = latest.cursorAgentId || `mock-${latest.id}`;
-    const current = latest.cursorAgentId
-      ? latest
-      : ((await updateUser(latest.id, { cursorAgentId: mockId })) ?? latest);
-    await patchJob(job.id, current.id, {
+    const binding = await agentBindingForJob(job, latest);
+    const mockId = binding.agentId || mockAgentIdForJob(job);
+    if (!binding.agentId) {
+      await saveAgentBindingForJob(job, mockId, "mock");
+    }
+    await patchJob(job.id, latest.id, {
       status: "dispatched",
       cursorAgentId: mockId,
       cursorRunId: mockRunId(job.id),
@@ -127,10 +129,10 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
       event: { type: "dispatch", detail: "Simulated dispatch (no Cursor API key for this workspace)" },
     });
     const { runMockAgent } = await import("@/lib/mock-agent");
-    const message = await runMockAgent(current, job, workspace);
+    const message = await runMockAgent(latest, job, workspace);
     const { settleJob } = await import("@/lib/settle");
-    await settleJob(job.id, current.id, { message });
-    return { user: current, agentId: mockId, mock: true };
+    await settleJob(job.id, latest.id, { message });
+    return { user: latest, agentId: mockId, mock: true };
   }
 
   // Pocketedge API clients (externalId) share the company workspace — no per-user GitHub repo.
@@ -161,27 +163,27 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     connections: mcp.connections,
   });
 
-  // One standing agent per client; replace it only when the owner's skills or the repo mode changed,
-  // because a running agent keeps the repo checkout it started with.
-  if (current.cursorAgentId && current.cursorAgentSkillsHash === hash) {
-    const run = await createRun(rt.cursorApiKey, current.cursorAgentId, promptText, mcp.servers);
+  // One Cursor agent per chat thread; replace only when skills or repo mode changed.
+  const binding = await agentBindingForJob(job, current);
+  if (binding.agentId && binding.skillsHash === hash) {
+    const run = await createRun(rt.cursorApiKey, binding.agentId, promptText, mcp.servers);
     const runId = run.ok ? extractRunId(run.body) : undefined;
     if (runId) {
       await patchJob(job.id, current.id, {
         status: "dispatched",
-        cursorAgentId: current.cursorAgentId,
+        cursorAgentId: binding.agentId,
         cursorRunId: runId,
         cursorHttpStatus: run.status,
         cursorBody: run.body,
-        event: { type: "dispatch", detail: `New run on agent ${current.cursorAgentId}` },
+        event: { type: "dispatch", detail: `New run on agent ${binding.agentId}` },
       });
-      return { user: current, agentId: current.cursorAgentId, mock: false };
+      return { user: current, agentId: binding.agentId, mock: false };
     }
     if (run.status === 409) {
       await failJob(job, current.id, "Your agent is still working on the previous message. Try again when it replies.");
-      return { user: current, agentId: current.cursorAgentId, mock: false };
+      return { user: current, agentId: binding.agentId, mock: false };
     }
-    // Agent expired or was removed: start a fresh one below. Memory and recent chat carry over.
+    // Agent expired or was removed: start a fresh one below.
   }
 
   const created = await createAgent(
@@ -190,8 +192,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     promptText,
     mcp.servers,
   );
-  current =
-    (await updateUser(current.id, { cursorAgentId: created.agentId, cursorAgentSkillsHash: hash })) ?? current;
+  await saveAgentBindingForJob(job, created.agentId, hash);
   await patchJob(job.id, current.id, {
     status: "dispatched",
     cursorAgentId: created.agentId,

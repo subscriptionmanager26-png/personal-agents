@@ -1,5 +1,6 @@
 import { describeFile, fileExcerpt, listFiles, MAX_FILES_PER_USER, readExtract } from "@/lib/files";
 import { listEarlierConversationJobs } from "@/lib/jobs";
+import { threadHasStandingAgent } from "@/lib/thread-agents";
 import { buildMemoryPack } from "@/lib/memory";
 import { describeOrder, listOrders } from "@/lib/orders";
 import { skillInstallDir } from "@/lib/skills";
@@ -133,7 +134,8 @@ export async function buildPersonalAgentPrompt(
   const workspace = await getWorkspace(user.workspaceId);
   const memory = await buildMemoryPack(user.id);
   const vaultLabels = await listVaultLabels(user.id);
-  const recent = await buildRecentConversation(job);
+  const recent =
+    (await threadHasStandingAgent(job, user)) ? "" : await buildRecentConversation(job);
   const orders = await recentOrdersSection(user.id);
   const attachments = await attachmentsSection(user, job, runtime.agentTools);
   const business = workspace?.name || "this service";

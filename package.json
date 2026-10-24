@@ -10,11 +10,13 @@
     "test": "npx tsx --tsconfig tsconfig.json --test src/lib/*.test.ts",
     "seed:company": "npx tsx --tsconfig tsconfig.json scripts/seed-demo-company.ts",
     "seed:pocketedge": "npx tsx --tsconfig tsconfig.json scripts/seed-pocketedge.ts",
-    "migrate-store-to-redis": "npx tsx --tsconfig tsconfig.json scripts/migrate-store-to-redis.ts"
+    "migrate-store-to-redis": "npx tsx --tsconfig tsconfig.json scripts/migrate-store-to-redis.ts",
+    "migrate-store-to-supabase": "npx tsx --tsconfig tsconfig.json scripts/migrate-store-to-supabase.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
     "@slack/web-api": "^8.2.0",
+    "@supabase/supabase-js": "^2.118.0",
     "@upstash/redis": "^1.39.0",
     "@vercel/blob": "^2.8.0",
     "class-variance-authority": "^0.7.1",

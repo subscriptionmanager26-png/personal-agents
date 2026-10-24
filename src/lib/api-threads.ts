@@ -1,5 +1,6 @@
 import { listJobsForUser } from "@/lib/jobs";
 import type { Job } from "@/lib/types";
+import { listWebThreadsForUser } from "@/lib/web-threads";
 
 export type ApiChatThread = {
   id: string;
@@ -48,5 +49,5 @@ function threadTitle(prompt: string | undefined) {
 /** Pocketedge www (`source: api`) conversations. */
 export async function listApiChatThreads(ownerUserId: string, limit = 40): Promise<ApiChatThread[]> {
   const jobs = (await listJobsForUser(ownerUserId, 2000)).filter((j) => j.source === "api");
-  return threadsFromJobs(jobs, limit);
+  return listWebThreadsForUser(ownerUserId, "api", jobs, limit);
 }

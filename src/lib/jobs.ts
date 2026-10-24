@@ -1,5 +1,6 @@
 import { randomId } from "@/lib/crypto";
 import { getStore, updateStore } from "@/lib/store";
+import { touchWebThread, webThreadSource } from "@/lib/web-threads";
 import type {
   JobAttachment,
   Job,
@@ -93,7 +94,7 @@ export async function createJob(input: {
     stream: [{ seq: 1, at: now, type: "status", label: "Queued" }],
   };
 
-  return updateStore((store) => {
+  const created = await updateStore((store) => {
     store.jobs.unshift(job);
     store.jobs = store.jobs.slice(0, MAX_JOBS);
 
@@ -127,6 +128,17 @@ export async function createJob(input: {
 
     return job;
   });
+
+  if (source !== "slack" && webThreadId) {
+    await touchWebThread({
+      ownerUserId: input.ownerUserId,
+      source: webThreadSource(source),
+      threadId: webThreadId,
+      prompt: input.prompt,
+    });
+  }
+
+  return created;
 }
 
 export function threadKey(

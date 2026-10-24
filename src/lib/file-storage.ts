@@ -2,7 +2,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { sha256 } from "@/lib/crypto";
-import { activeStoreBackend, blobStoreConfigured } from "@/lib/store-backend";
+import { activeStoreBackend } from "@/lib/store-backend";
+import { getSupabaseAdmin, SUPABASE_FILES_BUCKET } from "@/lib/supabase-admin";
 import { getRedis } from "@/lib/store";
 
 /** Raw uploads and extracted content: Upstash (preferred), Vercel Blob, or .data/files locally. */
@@ -10,7 +11,8 @@ import { getRedis } from "@/lib/store";
 export function fileStorageAvailable() {
   const backend = activeStoreBackend();
   if (backend === "redis") return Boolean(getRedis());
-  if (backend === "blob") return blobStoreConfigured();
+  if (backend === "supabase") return true;
+  if (backend === "blob") return true;
   return !process.env.VERCEL;
 }
 
@@ -45,10 +47,31 @@ async function getRedisObject(key: string): Promise<Buffer | undefined> {
   return Buffer.from(row.b64, "base64");
 }
 
+async function putSupabase(key: string, data: Buffer | string, contentType: string) {
+  const supabase = getSupabaseAdmin();
+  const body = typeof data === "string" ? Buffer.from(data, "utf8") : data;
+  const { error } = await supabase.storage.from(SUPABASE_FILES_BUCKET).upload(key, body, {
+    upsert: true,
+    contentType,
+  });
+  if (error) throw new Error(`Supabase file upload failed: ${error.message}`);
+}
+
+async function getSupabaseObject(key: string): Promise<Buffer | undefined> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.storage.from(SUPABASE_FILES_BUCKET).download(key);
+  if (error || !data) return undefined;
+  return Buffer.from(await data.arrayBuffer());
+}
+
 export async function putObject(key: string, data: Buffer | string, contentType: string) {
   const backend = activeStoreBackend();
   if (backend === "redis") {
     await putRedis(key, data, contentType);
+    return;
+  }
+  if (backend === "supabase") {
+    await putSupabase(key, data, contentType);
     return;
   }
   if (backend === "blob") {
@@ -69,6 +92,7 @@ export async function putObject(key: string, data: Buffer | string, contentType:
 export async function getObject(key: string): Promise<Buffer | undefined> {
   const backend = activeStoreBackend();
   if (backend === "redis") return getRedisObject(key);
+  if (backend === "supabase") return getSupabaseObject(key);
   if (backend === "blob") {
     const { get } = await import("@vercel/blob");
     try {
@@ -92,6 +116,11 @@ export async function deleteObjects(keys: string[]) {
   if (backend === "redis") {
     const redis = getRedis();
     if (redis) await Promise.all(keys.map((k) => redis.del(redisObjectKey(k))));
+    return;
+  }
+  if (backend === "supabase") {
+    const supabase = getSupabaseAdmin();
+    await supabase.storage.from(SUPABASE_FILES_BUCKET).remove(keys).catch(() => undefined);
     return;
   }
   if (backend === "blob") {
