@@ -7,10 +7,10 @@ export function middleware(request: NextRequest) {
   if (!isAdminHost(host)) return NextResponse.next();
 
   const { pathname } = request.nextUrl;
-  if (pathname.startsWith("/join") || pathname === "/") {
+  // `/` shows the admin login page; only send legacy join URLs into the app shell.
+  if (pathname.startsWith("/join")) {
     const url = request.nextUrl.clone();
-    url.pathname = pathname === "/" ? "/app" : "/app";
-    if (pathname.startsWith("/join")) url.pathname = "/app";
+    url.pathname = "/app";
     return NextResponse.redirect(url);
   }
   if (pathname === "/signup" || (pathname === "/" && request.nextUrl.searchParams.get("mode") === "signup")) {
