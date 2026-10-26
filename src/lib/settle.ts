@@ -213,6 +213,24 @@ export async function reconcileJob(job: Job): Promise<Job> {
     return (await getJob(job.id, { fresh: true })) ?? job;
   }
 
+  if (job.status === "queued") {
+    const ageMs = Date.now() - Date.parse(job.createdAt);
+    if (ageMs > 30 * 60_000) {
+      await patchJob(job.id, job.ownerUserId, {
+        status: "error",
+        error: "Agent never started. Please send your message again.",
+      });
+      return (await getJob(job.id, { fresh: true })) ?? job;
+    }
+    if (ageMs > 90_000 && !job.cursorAgentId) {
+      const { getUser } = await import("@/lib/users");
+      const { dispatchJob } = await import("@/lib/cursor");
+      const user = await getUser(job.ownerUserId);
+      if (user) await dispatchJob(user, job).catch(() => undefined);
+      return (await getJob(job.id, { fresh: true })) ?? job;
+    }
+  }
+
   if (ACTIVE_JOB.has(job.status) && job.status !== "queued" && job.cursorAgentId) {
     await settleIfFinished(job).catch(() => undefined);
     return (await getJob(job.id, { fresh: true })) ?? job;
