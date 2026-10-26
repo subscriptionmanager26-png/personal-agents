@@ -6,10 +6,11 @@ export const dynamic = "force-dynamic";
 
 function authorized(request: Request) {
   const cfg = getConfig();
-  if (!cfg.cronSecret) return false;
   const auth = request.headers.get("authorization") || "";
   const key = request.headers.get("x-cron-secret") || "";
-  return auth === `Bearer ${cfg.cronSecret}` || key === cfg.cronSecret;
+  if (cfg.cronSecret && (auth === `Bearer ${cfg.cronSecret}` || key === cfg.cronSecret)) return true;
+  const bootstrap = process.env.POCKETEDGE_API_KEY?.trim();
+  return Boolean(bootstrap && auth === `Bearer ${bootstrap}`);
 }
 
 /** Re-run Pocketedge workspace + API key seed into the active store (Redis/Supabase). */
