@@ -1,6 +1,7 @@
 import { messageView } from "@/lib/agent-api";
 import { clientText } from "@/lib/client-text";
-import { getJob, listJobsForUser } from "@/lib/jobs";
+import { listJobsForUser } from "@/lib/jobs";
+import { reconcileJob } from "@/lib/settle";
 import { listWebThreadsForUser } from "@/lib/web-threads";
 import type { ActionRequired, Job, JobAttachment, UiBlock } from "@/lib/types";
 
@@ -37,9 +38,7 @@ export async function listChatThreads(ownerUserId: string, limit = 40): Promise<
 export async function listThreadJobs(ownerUserId: string, threadId: string) {
   const jobs = webJobs(await listJobsForUser(ownerUserId, 400)).filter((j) => (j.webThreadId ?? "main") === threadId);
   const slice = jobs.slice(0, 60).reverse();
-  return Promise.all(
-    slice.map(async (job) => (ACTIVE.has(job.status) ? (await getJob(job.id, { fresh: true })) ?? job : job)),
-  );
+  return Promise.all(slice.map(async (job) => (ACTIVE.has(job.status) ? reconcileJob(job) : job)));
 }
 
 export function chatMessage(job: Job): ChatMessage {

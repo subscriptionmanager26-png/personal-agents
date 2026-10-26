@@ -7,6 +7,29 @@ import { postSlackMessage } from "@/lib/slack";
 import type { Job } from "@/lib/types";
 
 const settling = new Set<string>();
+const ACTIVE_JOB = new Set(["queued", "dispatched", "delivering"]);
+const RUNNING_RUN = new Set(["RUNNING", "QUEUED", "PENDING", "ACTIVE", "IN_PROGRESS", "CREATING"]);
+
+function replyTextFromStream(job: Job) {
+  const fromReply = job.reply?.message?.trim();
+  if (fromReply) return fromReply;
+  const parts = (job.stream ?? []).flatMap((e) =>
+    e.type === "block" && e.block.kind === "markdown" && e.block.text?.trim() ? [e.block.text.trim()] : [],
+  );
+  return parts.join("\n\n").trim();
+}
+
+function agentLooksIdle(status: string) {
+  const s = status.toUpperCase();
+  return (
+    s.includes("FINISH") ||
+    s.includes("ERROR") ||
+    s === "IDLE" ||
+    s.includes("COMPLETE") ||
+    s.includes("STOP") ||
+    s.includes("CANCEL")
+  );
+}
 
 async function maybePostSlack(
   job: NonNullable<Awaited<ReturnType<typeof getJob>>>,
@@ -37,7 +60,7 @@ export async function settleJob(
   if (settling.has(key)) return;
   settling.add(key);
   try {
-    const job = await getJob(jobId);
+    const job = await getJob(jobId, { fresh: true });
     if (!job || job.ownerUserId !== ownerUserId) return;
     if (job.status === "replied" || job.status === "error") return;
 
@@ -114,20 +137,88 @@ export async function settleByAgentId(agentId: string) {
 export async function settleIfFinished(job: Job) {
   if (!job.cursorAgentId || job.cursorAgentId.startsWith("mock-")) return;
   if (job.status !== "dispatched" && job.status !== "delivering") return;
-  const { getAgent, getRun, TERMINAL_RUN_STATUSES } = await import("@/lib/cursor-api");
+  const { getAgent, getAgentV1, getRun, TERMINAL_RUN_STATUSES } = await import("@/lib/cursor-api");
   const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
+  if (!key) return;
+
+  let runStatus = "";
+  let runResult: string | undefined;
+
   if (job.cursorRunId) {
-    const run = await getRun(key, job.cursorAgentId, job.cursorRunId);
-    if (TERMINAL_RUN_STATUSES.includes((run.status || "").toUpperCase())) {
-      await settleJob(job.id, job.ownerUserId);
+    try {
+      const run = await getRun(key, job.cursorAgentId, job.cursorRunId);
+      runStatus = (run.status || "").toUpperCase();
+      if (run.result?.trim()) runResult = run.result.trim();
+      if (TERMINAL_RUN_STATUSES.includes(runStatus) || runResult) {
+        await settleJob(job.id, job.ownerUserId, runResult ? { message: runResult } : undefined);
+        return;
+      }
+    } catch {
+      // fall through to agent-level checks
     }
-    return;
   }
-  const agent = await getAgent(key, job.cursorAgentId);
-  const status = (agent.status || "").toUpperCase();
-  if (status.includes("FINISH") || status.includes("ERROR") || status === "IDLE" || status.includes("COMPLETE")) {
-    await settleJob(job.id, job.ownerUserId);
+
+  try {
+    const v1 = await getAgentV1(key, job.cursorAgentId);
+    if (agentLooksIdle(v1.status || "")) {
+      await settleJob(job.id, job.ownerUserId);
+      return;
+    }
+  } catch {
+    // v0 fallback below
   }
+
+  try {
+    const agent = await getAgent(key, job.cursorAgentId);
+    if (agentLooksIdle(agent.status || "")) {
+      await settleJob(job.id, job.ownerUserId);
+      return;
+    }
+  } catch {
+    // conversation fallback below
+  }
+
+  if (runStatus && RUNNING_RUN.has(runStatus)) return;
+
+  try {
+    const preview = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    if (preview && !preview.startsWith("Agent status:")) {
+      await settleJob(job.id, job.ownerUserId, { message: preview });
+    }
+  } catch {
+    // still dispatched; next read or poll will retry
+  }
+}
+
+/** Fix stale job rows and settle with Cursor when a finished run was never delivered. */
+export async function reconcileJob(job: Job): Promise<Job> {
+  if (job.status === "replied" || job.status === "error") return job;
+
+  const stream = job.stream ?? [];
+  const doneAt = stream.find((e) => e.type === "done")?.at;
+  const streamError = stream.find((e) => e.type === "error");
+  if (streamError) {
+    await patchJob(job.id, job.ownerUserId, {
+      status: "error",
+      error: streamError.message || "The agent could not finish.",
+    });
+    return (await getJob(job.id, { fresh: true })) ?? job;
+  }
+  if (doneAt) {
+    const message = replyTextFromStream(job) || "Done.";
+    await patchJob(job.id, job.ownerUserId, {
+      status: "replied",
+      reply: { message, receivedAt: doneAt },
+    });
+    return (await getJob(job.id, { fresh: true })) ?? job;
+  }
+
+  if (ACTIVE_JOB.has(job.status) && job.status !== "queued" && job.cursorAgentId) {
+    await settleIfFinished(job).catch(() => undefined);
+    return (await getJob(job.id, { fresh: true })) ?? job;
+  }
+
+  return job;
 }
 
 export async function pollDispatchedJobs() {

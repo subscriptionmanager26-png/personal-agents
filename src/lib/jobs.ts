@@ -262,6 +262,6 @@ export async function markSlackMessageProcessed(key: string) {
 }
 
 export async function listDispatchedJobs() {
-  const store = await getStore();
+  const store = await getStoreFresh();
   return store.jobs.filter((j) => j.status === "dispatched" && j.cursorAgentId);
 }

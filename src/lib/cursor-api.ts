@@ -73,7 +73,18 @@ export type CursorRun = {
   durationMs?: number;
 };
 
-export const TERMINAL_RUN_STATUSES = ["FINISHED", "ERROR", "CANCELLED", "EXPIRED"];
+export const TERMINAL_RUN_STATUSES = [
+  "FINISHED",
+  "ERROR",
+  "CANCELLED",
+  "EXPIRED",
+  "COMPLETED",
+  "COMPLETE",
+  "FAILED",
+  "SUCCEEDED",
+  "SUCCESS",
+  "STOPPED",
+];
 
 export function extractRunId(body: unknown): string | undefined {
   if (!body || typeof body !== "object") return undefined;

@@ -26,6 +26,9 @@ export type MessageView = {
 function viewStatus(job: Job): MessageView["status"] {
   if (job.status === "replied") return "completed";
   if (job.status === "error") return "failed";
+  const stream = job.stream ?? [];
+  if (stream.some((e) => e.type === "done")) return "completed";
+  if (stream.some((e) => e.type === "error")) return "failed";
   return "working";
 }
 
@@ -65,26 +68,32 @@ function safeMessageView(job: Job): MessageView {
   }
 }
 
+const ACTIVE_MESSAGE = new Set(["queued", "dispatched", "delivering"]);
+
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
   const store = await getStore();
   const scanCap = opts.threadId ? 400 : 250;
   const out: MessageView[] = [];
   let examined = 0;
+  const { reconcileJob } = await import("@/lib/settle");
   for (const job of sortedJobsForUser(store, ownerUserId)) {
     examined += 1;
     if (examined > scanCap) break;
     if (job.source !== opts.source) continue;
     if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
-    out.push(safeMessageView(job));
+    const row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
+    out.push(safeMessageView(row));
     if (out.length >= limit) break;
   }
   return out;
 }
 
 export async function getOwnedMessage(ownerUserId: string, messageId: string) {
-  const job = await getJob(messageId);
-  return job && job.ownerUserId === ownerUserId ? job : undefined;
+  const job = await getJob(messageId, { fresh: true });
+  if (!job || job.ownerUserId !== ownerUserId) return undefined;
+  const { reconcileJob } = await import("@/lib/settle");
+  return reconcileJob(job);
 }
 
 export function orderView(o: OrderProposal) {
