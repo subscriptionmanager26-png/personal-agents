@@ -97,7 +97,7 @@ async function writeBlob(data: StoreData) {
 }
 
 const STORE_CACHE_MS = Math.min(
-  Math.max(Number(process.env.PERSONAL_AGENTS_STORE_CACHE_MS) || 5000, 0),
+  Math.max(Number(process.env.PERSONAL_AGENTS_STORE_CACHE_MS) || 15_000, 0),
   60_000,
 );
 
