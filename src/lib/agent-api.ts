@@ -1,5 +1,6 @@
 import { clientAction, clientBlock, clientError, clientStreamEvent } from "@/lib/client-text";
-import { getJob, listJobsForUser } from "@/lib/jobs";
+import { getJob, sortedJobsForUser } from "@/lib/jobs";
+import { getStore } from "@/lib/store";
 import { listOrders } from "@/lib/orders";
 import type { ActionRequired, Job, JobAttachment, OrderProposal, StreamEvent, UiBlock } from "@/lib/types";
 
@@ -66,10 +67,19 @@ function safeMessageView(job: Job): MessageView {
 
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-  const jobs = (await listJobsForUser(ownerUserId, 1000)).filter(
-    (j) => j && j.source === opts.source && (!opts.threadId || (j.webThreadId ?? "main") === opts.threadId),
-  );
-  return jobs.slice(0, limit).map(safeMessageView);
+  const store = await getStore();
+  const scanCap = opts.threadId ? 400 : 250;
+  const out: MessageView[] = [];
+  let examined = 0;
+  for (const job of sortedJobsForUser(store, ownerUserId)) {
+    examined += 1;
+    if (examined > scanCap) break;
+    if (job.source !== opts.source) continue;
+    if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
+    out.push(safeMessageView(job));
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 export async function getOwnedMessage(ownerUserId: string, messageId: string) {

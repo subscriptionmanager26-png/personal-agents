@@ -9,6 +9,7 @@ import type {
   SlackThreadRef,
   StreamEvent,
   StreamEventInput,
+  StoreData,
 } from "@/lib/types";
 
 const MAX_JOBS = 1000;
@@ -159,13 +160,15 @@ function jobSortTime(job: Job) {
   return typeof t === "string" ? t : "";
 }
 
-export async function listJobsForUser(ownerUserId: string, limit = 50) {
-  const store = await getStore();
+export function sortedJobsForUser(store: StoreData, ownerUserId: string): Job[] {
   const jobs = Array.isArray(store.jobs) ? store.jobs : [];
   return jobs
     .filter((j): j is Job => Boolean(j && typeof j === "object" && j.ownerUserId === ownerUserId))
-    .sort((a, b) => jobSortTime(b).localeCompare(jobSortTime(a)))
-    .slice(0, limit);
+    .sort((a, b) => jobSortTime(b).localeCompare(jobSortTime(a)));
+}
+
+export async function listJobsForUser(ownerUserId: string, limit = 50) {
+  return sortedJobsForUser(await getStore(), ownerUserId).slice(0, limit);
 }
 
 /** Earlier replied jobs in the same web thread or Slack thread as `job`, newest first. */

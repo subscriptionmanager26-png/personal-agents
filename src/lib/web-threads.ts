@@ -1,6 +1,6 @@
 import { getStore, updateStore } from "@/lib/store";
 import { threadKey } from "@/lib/jobs";
-import type { Job, JobSource, WebThread } from "@/lib/types";
+import type { Job, JobSource, StoreData, WebThread } from "@/lib/types";
 
 export function webThreadStoreKey(ownerUserId: string, source: "web" | "api", threadId: string) {
   return threadKey(ownerUserId, source, threadId);
@@ -110,8 +110,9 @@ export async function listWebThreadsForUser(
   source: "web" | "api",
   jobs: Job[],
   limit = 40,
+  storeSnapshot?: StoreData,
 ): Promise<{ id: string; title: string; updatedAt: string; working: boolean }[]> {
-  const store = await getStore();
+  const store = storeSnapshot ?? await getStore();
   const merged = new Map<string, { id: string; title: string; updatedAt: string; working: boolean }>();
 
   for (const thread of Object.values(store.webThreads)) {

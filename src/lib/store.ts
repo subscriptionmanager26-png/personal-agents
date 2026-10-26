@@ -96,7 +96,19 @@ async function writeBlob(data: StoreData) {
   });
 }
 
-export async function getStore(): Promise<StoreData> {
+const STORE_CACHE_MS = Math.min(
+  Math.max(Number(process.env.PERSONAL_AGENTS_STORE_CACHE_MS) || 5000, 0),
+  60_000,
+);
+
+let memCache: { at: number; data: StoreData } | null = null;
+
+/** Drop in-memory store snapshot (tests and before forced reload). */
+export function invalidateStoreCache() {
+  memCache = null;
+}
+
+async function readStoreFromBackend(): Promise<StoreData> {
   try {
     const backend = activeStoreBackend();
     if (backend === "redis") {
@@ -117,12 +129,22 @@ export async function getStore(): Promise<StoreData> {
   }
 }
 
+export async function getStore(): Promise<StoreData> {
+  if (STORE_CACHE_MS > 0 && memCache && Date.now() - memCache.at < STORE_CACHE_MS) {
+    return memCache.data;
+  }
+  const data = await readStoreFromBackend();
+  if (STORE_CACHE_MS > 0) memCache = { at: Date.now(), data };
+  return data;
+}
+
 export async function updateStore<T>(
   fn: (store: StoreData) => T | Promise<T>,
 ): Promise<T> {
   const run = async () => {
     const backend = activeStoreBackend();
-    const current = await getStore();
+    invalidateStoreCache();
+    const current = await readStoreFromBackend();
     const result = await fn(current);
     if (backend === "redis") {
       const redis = getRedis();
@@ -135,6 +157,7 @@ export async function updateStore<T>(
     } else {
       await writeLocal(current);
     }
+    if (STORE_CACHE_MS > 0) memCache = { at: Date.now(), data: current };
     return result;
   };
 
