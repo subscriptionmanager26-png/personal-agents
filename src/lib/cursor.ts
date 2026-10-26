@@ -180,6 +180,23 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
       return { user: current, agentId: binding.agentId, mock: false };
     }
     if (run.status === 409) {
+      const { reconcileActiveJobsInThread, settleByAgentId } = await import("@/lib/settle");
+      await reconcileActiveJobsInThread(current.id, job.source ?? "web", job.webThreadId ?? "main");
+      await settleByAgentId(binding.agentId);
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const retry = await createRun(rt.cursorApiKey, binding.agentId, promptText, mcp.servers);
+      const retryRunId = retry.ok ? extractRunId(retry.body) : undefined;
+      if (retryRunId) {
+        await patchJob(job.id, current.id, {
+          status: "dispatched",
+          cursorAgentId: binding.agentId,
+          cursorRunId: retryRunId,
+          cursorHttpStatus: retry.status,
+          cursorBody: retry.body,
+          event: { type: "dispatch", detail: `New run on agent ${binding.agentId} (after 409)` },
+        });
+        return { user: current, agentId: binding.agentId, mock: false };
+      }
       await failJob(job, current.id, "Your agent is still working on the previous message. Try again when it replies.");
       return { user: current, agentId: binding.agentId, mock: false };
     }

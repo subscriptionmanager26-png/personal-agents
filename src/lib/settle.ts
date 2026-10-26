@@ -1,7 +1,9 @@
 import { clientText } from "@/lib/client-text";
 import { fetchFinalAssistantMessage } from "@/lib/cursor";
 import { runtimeForUserId } from "@/lib/runtime";
-import { getJob, listDispatchedJobs, patchJob } from "@/lib/jobs";
+import { getJob, listDispatchedJobs, patchJob, sortedJobsForUser } from "@/lib/jobs";
+import { getStoreFresh } from "@/lib/store";
+import type { JobSource } from "@/lib/types";
 import { addAutoEpisode } from "@/lib/memory";
 import { postSlackMessage } from "@/lib/slack";
 import type { Job } from "@/lib/types";
@@ -29,6 +31,11 @@ function agentLooksIdle(status: string) {
     s.includes("STOP") ||
     s.includes("CANCEL")
   );
+}
+
+function agentLooksRunning(status: string) {
+  const s = status.toUpperCase();
+  return RUNNING_RUN.has(s) || (s.includes("RUN") && !agentLooksIdle(s));
 }
 
 async function maybePostSlack(
@@ -149,10 +156,11 @@ export async function settleIfFinished(job: Job) {
       const run = await getRun(key, job.cursorAgentId, job.cursorRunId);
       runStatus = (run.status || "").toUpperCase();
       if (run.result?.trim()) runResult = run.result.trim();
-      if (TERMINAL_RUN_STATUSES.includes(runStatus) || runResult) {
+      if (TERMINAL_RUN_STATUSES.includes(runStatus)) {
         await settleJob(job.id, job.ownerUserId, runResult ? { message: runResult } : undefined);
         return;
       }
+      if (RUNNING_RUN.has(runStatus)) return;
     } catch {
       // fall through to agent-level checks
     }
@@ -160,6 +168,7 @@ export async function settleIfFinished(job: Job) {
 
   try {
     const v1 = await getAgentV1(key, job.cursorAgentId);
+    if (agentLooksRunning(v1.status || "")) return;
     if (agentLooksIdle(v1.status || "")) {
       await settleJob(job.id, job.ownerUserId);
       return;
@@ -179,6 +188,13 @@ export async function settleIfFinished(job: Job) {
   }
 
   if (runStatus && RUNNING_RUN.has(runStatus)) return;
+
+  try {
+    const v1 = await getAgentV1(key, job.cursorAgentId);
+    if (agentLooksRunning(v1.status || "")) return;
+  } catch {
+    // continue
+  }
 
   try {
     const preview = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
@@ -237,6 +253,25 @@ export async function reconcileJob(job: Job): Promise<Job> {
   }
 
   return job;
+}
+
+/** Reconcile in-flight jobs in one chat thread before accepting another message. */
+export async function reconcileActiveJobsInThread(
+  ownerUserId: string,
+  source: JobSource,
+  threadId: string,
+): Promise<Job[]> {
+  const store = await getStoreFresh();
+  const jobs = sortedJobsForUser(store, ownerUserId).filter(
+    (j) => (j.source ?? "web") === source && (j.webThreadId ?? "main") === threadId,
+  );
+  const stillActive: Job[] = [];
+  for (const job of jobs.slice(0, 25)) {
+    if (!ACTIVE_JOB.has(job.status)) continue;
+    const row = await reconcileJob(job);
+    if (ACTIVE_JOB.has(row.status)) stillActive.push(row);
+  }
+  return stillActive;
 }
 
 export async function pollDispatchedJobs() {
