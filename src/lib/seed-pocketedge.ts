@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import { createApiKey, ensureSigningSecret } from "@/lib/company";
+import { createApiKey, ensureSigningSecret, registerApiKeyFromPlaintext } from "@/lib/company";
 import { updateAgentRuntime } from "@/lib/runtime";
 import { getStore } from "@/lib/store";
 import { getUser, registerUserWithEmail } from "@/lib/users";
@@ -44,6 +44,8 @@ export type SeedPocketedgeResult = {
   workspaceSlug: string;
   agentPublicUrl: string;
   apiKeyCreated: boolean;
+  /** Present only when a new key was minted this run (hashed in store otherwise). */
+  apiKey?: string;
   skills: string[];
 };
 
@@ -87,12 +89,18 @@ export async function seedPocketedge(opts?: {
   let apiKeyCreated = false;
   let keyText = process.env.POCKETEDGE_API_KEY?.trim();
   const hadKeys = (ws.apiKeys ?? []).length > 0;
-  if (!keyText && !hadKeys) {
-    const key = await createApiKey(owner.id, ws.id, "Pocketedge backend");
-    if (!key) throw new Error("Could not create API key");
-    keyText = key.key;
-    apiKeyCreated = true;
-    if (opts?.writeKeyFile !== false && !process.env.VERCEL) {
+  if (!hadKeys) {
+    if (keyText) {
+      const ok = await registerApiKeyFromPlaintext(owner.id, ws.id, keyText, "Pocketedge backend");
+      if (!ok) throw new Error("POCKETEDGE_API_KEY is not a valid pa_… key or workspace mismatch");
+      apiKeyCreated = true;
+    } else {
+      const key = await createApiKey(owner.id, ws.id, "Pocketedge backend");
+      if (!key) throw new Error("Could not create API key");
+      keyText = key.key;
+      apiKeyCreated = true;
+    }
+    if (opts?.writeKeyFile !== false && !process.env.VERCEL && keyText) {
       const keyFile = path.join(process.cwd(), ".data", "pocketedge-api-key");
       writeFileSync(keyFile, keyText, { mode: 0o600 });
     }
@@ -111,6 +119,7 @@ export async function seedPocketedge(opts?: {
     workspaceSlug: "pocketedge",
     agentPublicUrl: fresh.runtime?.agentPublicUrl || base,
     apiKeyCreated,
+    apiKey: apiKeyCreated ? keyText : undefined,
     skills: fresh.skills.map((s) => s.name),
   };
 }

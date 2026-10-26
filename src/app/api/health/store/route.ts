@@ -1,5 +1,5 @@
 import { activeStoreBackend, blobStoreConfigured, blobStoreDisabled, redisConfigured } from "@/lib/store-backend";
-import { supabaseStoreConfigured } from "@/lib/supabase-admin";
+import { supabaseEnvStatus, supabaseStoreConfigured } from "@/lib/supabase-admin";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +16,7 @@ export async function GET() {
         blobDisabled: blobStoreDisabled(),
         redis: redisConfigured(),
         supabase: supabaseStoreConfigured(),
+        supabaseEnv: supabaseEnvStatus(),
         blob: blobStoreConfigured(),
       },
       { status: 503 },
@@ -27,6 +28,7 @@ export async function GET() {
     blobDisabled: blobStoreDisabled(),
     redis: redisConfigured(),
     supabase: supabaseStoreConfigured(),
+    supabaseEnv: supabaseEnvStatus(),
     blob: blobStoreConfigured(),
   });
 }

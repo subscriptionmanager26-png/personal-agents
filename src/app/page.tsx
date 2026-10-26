@@ -4,8 +4,9 @@ import { redirect } from "next/navigation";
 
 import { AuthForm, AuthPage } from "@/components/auth-form";
 import { SaffronLanding } from "@/components/saffron/saffron-landing";
-import { getSession } from "@/lib/session";
+import { clearSessionCookie, getSession } from "@/lib/session";
 import { isAdminHost, isSaffronHost } from "@/lib/site-mode";
+import { getViewer } from "@/lib/viewer";
 
 export async function generateMetadata(): Promise<Metadata> {
   const host = (await headers()).get("host");
@@ -34,7 +35,12 @@ export default async function HomePage({
   }
 
   const session = await getSession();
-  if (session) redirect("/app");
+  if (session) {
+    const viewer = await getViewer();
+    if (viewer) redirect("/app");
+    // Stale cookie after store reset / user removed — avoids / ↔ /app redirect loop.
+    await clearSessionCookie();
+  }
 
   const admin = isAdminHost(host);
   const error = typeof params.error === "string" ? params.error : "";

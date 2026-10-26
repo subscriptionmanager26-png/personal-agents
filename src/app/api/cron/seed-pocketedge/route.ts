@@ -19,7 +19,15 @@ export async function POST(request: Request) {
   }
   try {
     const result = await seedPocketedge({ writeKeyFile: false });
-    return Response.json({ ok: true, ...result, hint: result.apiKeyCreated ? "Update Pramaan PERSONAL_AGENTS_API_KEY" : undefined });
+    return Response.json({
+      ok: true,
+      ...result,
+      hint: result.apiKey
+        ? "Copy apiKey into Pramaan production PERSONAL_AGENTS_API_KEY and redeploy www."
+        : result.apiKeyCreated
+          ? "Update Pramaan PERSONAL_AGENTS_API_KEY"
+          : "Workspace already has API keys; create a new key in Studio → Developers if Pramaan key was lost.",
+    });
   } catch (error) {
     console.error("[cron/seed-pocketedge]", error);
     if (isStoreReadError(error)) {

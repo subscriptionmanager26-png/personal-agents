@@ -22,6 +22,11 @@ export function supabaseStoreConfigured() {
   return Boolean(supabaseUrl() && supabaseServiceRoleKey());
 }
 
+/** For /api/health/store — which env pieces are present (no secret values). */
+export function supabaseEnvStatus() {
+  return { url: Boolean(supabaseUrl()), serviceRoleKey: Boolean(supabaseServiceRoleKey()) };
+}
+
 export function getSupabaseAdmin(): SupabaseClient {
   if (client) return client;
   const url = supabaseUrl();

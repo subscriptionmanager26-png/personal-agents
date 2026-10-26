@@ -20,6 +20,32 @@ function hashSecret(secret: string) {
   return sha256(secret).toString("hex");
 }
 
+/** Store a pre-generated `pa_<id>_<secret>` key if the workspace has none yet (e.g. from POCKETEDGE_API_KEY env). */
+export async function registerApiKeyFromPlaintext(
+  ownerUserId: string,
+  workspaceId: string,
+  fullKey: string,
+  label: string,
+) {
+  const match = fullKey.match(/^pa_([a-f0-9]{12})_([A-Za-z0-9_-]{20,})$/);
+  if (!match) return false;
+  const [, id, secret] = match;
+  const record: ApiKey = {
+    id,
+    label: label.trim().slice(0, 60) || "API key",
+    hash: hashSecret(secret),
+    createdAt: new Date().toISOString(),
+  };
+  const ok = await updateStore((store) => {
+    const ws = store.workspaces[workspaceId];
+    if (!ws || ws.ownerUserId !== ownerUserId) return false;
+    if ((ws.apiKeys ?? []).some((k) => k.id === id)) return true;
+    (ws.apiKeys ??= []).push(record);
+    return true;
+  });
+  return ok;
+}
+
 /** Returns the full key once; only its hash is stored. Format: pa_<keyId>_<secret>. */
 export async function createApiKey(ownerUserId: string, workspaceId: string, label: string) {
   const id = crypto.randomBytes(6).toString("hex");
