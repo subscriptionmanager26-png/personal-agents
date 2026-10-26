@@ -45,17 +45,39 @@ export function AgentProgress({ jobId, startedAt, steps }: { jobId: string; star
   const onFinished = useEffectEvent(() => router.refresh());
 
   useEffect(() => {
+    let closed = false;
+    const finish = () => {
+      if (closed) return;
+      closed = true;
+      source.close();
+      onFinished();
+    };
+
     const source = new EventSource(`/api/jobs/${encodeURIComponent(jobId)}/stream`);
     source.onmessage = (message) => {
       const event = JSON.parse(message.data) as TraceEvent;
       const next = labelFor(event);
       if (next) setLabel(next);
-      if (event.type === "result" || event.type === "done") {
-        source.close();
-        onFinished();
+      if (event.type === "result" || event.type === "done" || event.type === "error" || event.type === "expired") {
+        finish();
       }
     };
-    return () => source.close();
+    source.onerror = () => finish();
+
+    const poll = window.setInterval(() => {
+      void fetch(`/api/jobs/${encodeURIComponent(jobId)}/status`, { cache: "no-store" })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((body) => {
+          if (body?.settled) finish();
+        })
+        .catch(() => undefined);
+    }, 2500);
+
+    return () => {
+      closed = true;
+      window.clearInterval(poll);
+      source.close();
+    };
   }, [jobId]);
 
   return <WorkingSteps steps={steps} label={steps.length && label === "Starting your agent…" ? undefined : label} startedAt={startedAt} />;

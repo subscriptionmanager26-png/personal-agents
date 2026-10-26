@@ -145,7 +145,7 @@ export function messageEventStream(request: Request, ownerUserId: string, messag
       write("retry: 2000\n\n");
       try {
         while (!request.signal.aborted) {
-          const job = await getJob(messageId);
+          const job = await getJob(messageId, { fresh: true });
           if (!job || job.ownerUserId !== ownerUserId) {
             write(`event: error\ndata: ${JSON.stringify({ type: "error", message: "message not found" })}\n\n`);
             break;
@@ -155,8 +155,24 @@ export function messageEventStream(request: Request, ownerUserId: string, messag
             write(encode(clientStreamEvent(event)));
             sent = event.seq;
           }
+          const terminalInStream = (job.stream ?? []).some((e) => e.type === "done" || e.type === "error");
           if (fresh.some((e) => e.type === "done" || e.type === "error")) break;
-          if ((job.stream ?? []).some((e) => e.seq <= sent && (e.type === "done" || e.type === "error"))) break;
+          if (terminalInStream && sent >= (job.stream ?? []).find((e) => e.type === "done" || e.type === "error")!.seq) {
+            break;
+          }
+          if (job.status === "replied") {
+            const alreadySentDone = (job.stream ?? []).some((e) => e.type === "done" && e.seq <= sent);
+            if (!alreadySentDone) {
+              write(`event: done\ndata: ${JSON.stringify({ type: "done", at: job.reply?.receivedAt })}\n\n`);
+            }
+            break;
+          }
+          if (job.status === "error") {
+            write(
+              `event: error\ndata: ${JSON.stringify({ type: "error", message: job.error || "The agent could not finish." })}\n\n`,
+            );
+            break;
+          }
           if (Date.now() - started > MAX_STREAM_MS) break;
           // Nothing else watches API runs, so check Cursor while the caller is listening.
           if (Date.now() - lastRunCheck > RUN_CHECK_MS) {

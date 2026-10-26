@@ -138,6 +138,13 @@ export async function getStore(): Promise<StoreData> {
   return data;
 }
 
+/** Bypass in-memory cache — use for job status / live streams (other lambdas may have written). */
+export async function getStoreFresh(): Promise<StoreData> {
+  const data = await readStoreFromBackend();
+  if (STORE_CACHE_MS > 0) memCache = { at: Date.now(), data };
+  return data;
+}
+
 export async function updateStore<T>(
   fn: (store: StoreData) => T | Promise<T>,
 ): Promise<T> {

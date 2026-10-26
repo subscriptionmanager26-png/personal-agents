@@ -1,5 +1,5 @@
 import { randomId } from "@/lib/crypto";
-import { getStore, updateStore } from "@/lib/store";
+import { getStore, getStoreFresh, updateStore } from "@/lib/store";
 import { touchWebThread, webThreadSource } from "@/lib/web-threads";
 import type {
   JobAttachment,
@@ -150,8 +150,8 @@ export function threadKey(
   return `${ownerUserId}:${channelId}:${threadTs}`;
 }
 
-export async function getJob(id: string) {
-  const store = await getStore();
+export async function getJob(id: string, opts?: { fresh?: boolean }) {
+  const store = opts?.fresh ? await getStoreFresh() : await getStore();
   return store.jobs.find((j) => j.id === id);
 }
 

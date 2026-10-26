@@ -4,7 +4,7 @@ import { clientTrace } from "@/lib/client-text";
 import { getAgentV1, openRunStream } from "@/lib/cursor-api";
 import { runtimeForUserId } from "@/lib/runtime";
 import { getOwnedJob } from "@/lib/job-access";
-import { patchJob } from "@/lib/jobs";
+import { getJob, patchJob } from "@/lib/jobs";
 import { isMockRunId, mockScript } from "@/lib/mock-trace";
 import { settleJob } from "@/lib/settle";
 import { encodeSse, parseSse, toTraceEvent } from "@/lib/trace";
@@ -122,6 +122,11 @@ export async function GET(
           if (event.type === "result") await onRunResult(job, event);
           send(event, raw.id);
         }
+
+        const { settleIfFinished } = await import("@/lib/settle");
+        await settleIfFinished(job).catch(() => undefined);
+        const settled = await getJob(job.id, { fresh: true });
+        if (settled && isSettled(settled)) return finish();
         controller.close();
       } catch (error) {
         if (request.signal.aborted) return;

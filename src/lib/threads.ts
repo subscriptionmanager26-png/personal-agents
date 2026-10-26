@@ -1,6 +1,6 @@
 import { messageView } from "@/lib/agent-api";
 import { clientText } from "@/lib/client-text";
-import { listJobsForUser } from "@/lib/jobs";
+import { getJob, listJobsForUser } from "@/lib/jobs";
 import { listWebThreadsForUser } from "@/lib/web-threads";
 import type { ActionRequired, Job, JobAttachment, UiBlock } from "@/lib/types";
 
@@ -36,7 +36,10 @@ export async function listChatThreads(ownerUserId: string, limit = 40): Promise<
 /** Messages of one web thread, oldest first. */
 export async function listThreadJobs(ownerUserId: string, threadId: string) {
   const jobs = webJobs(await listJobsForUser(ownerUserId, 400)).filter((j) => (j.webThreadId ?? "main") === threadId);
-  return jobs.slice(0, 60).reverse();
+  const slice = jobs.slice(0, 60).reverse();
+  return Promise.all(
+    slice.map(async (job) => (ACTIVE.has(job.status) ? (await getJob(job.id, { fresh: true })) ?? job : job)),
+  );
 }
 
 export function chatMessage(job: Job): ChatMessage {
