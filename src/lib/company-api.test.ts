@@ -248,7 +248,12 @@ test("false busy error with streamed UI is healed to completed", async () => {
     error: "Your agent is still working on the previous message. Try again when it replies.",
   });
 
-  const healed = await reconcileErroredJob((await getJob(job.id))!);
+  const stuck = (await getJob(job.id))!;
+  const viewBeforeHeal = messageView(stuck);
+  assert.equal(viewBeforeHeal.status, "completed", "API must not expose false busy when UI blocks exist");
+  assert.equal(viewBeforeHeal.error, undefined);
+
+  const healed = await reconcileErroredJob(stuck);
   assert.equal(healed.status, "replied");
   assert.equal(healed.error, undefined);
   const view = messageView(healed);
