@@ -17,7 +17,8 @@ export function titleFromPrompt(prompt: string) {
 }
 
 export async function getWebThread(ownerUserId: string, source: "web" | "api", threadId: string) {
-  const store = await getStore();
+  const { getStoreFresh } = await import("@/lib/store");
+  const store = await getStoreFresh();
   const key = webThreadStoreKey(ownerUserId, source, threadId);
   const thread = store.webThreads[key];
   if (!thread || thread.ownerUserId !== ownerUserId) return undefined;

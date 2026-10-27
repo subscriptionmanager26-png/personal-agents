@@ -204,7 +204,7 @@ test("the event stream follows the job lifecycle and the agent's UI tools", asyn
 
   const view = messageView(final);
   assert.equal(view.status, "completed");
-  assert.deepEqual(view.blocks.map((b) => b.kind), ["table", "markdown"]);
+  assert.deepEqual(view.blocks.map((b) => b.kind), ["markdown", "table"]);
   assert.equal(view.actions[0]?.kind, "connection_login");
 
   const late = await call("propose_order", { symbol: "INFY", side: "BUY", quantity: 5, rationale: "x" });
@@ -215,4 +215,44 @@ test("the event stream follows the job lifecycle and the agent's UI tools", asyn
   await patchJob(failing.id, user.id, { status: "replied", reply: { message: "late", receivedAt: new Date().toISOString() } });
   const failed = (await getJob(failing.id))!;
   assert.deepEqual(failed.stream!.map((e) => e.type), ["status", "error"], "nothing after a terminal event");
+});
+
+test("false busy error with streamed UI is healed to completed", async () => {
+  const { createJob, patchJob, appendStreamEvents, getJob } = await import("@/lib/jobs");
+  const { reconcileErroredJob } = await import("@/lib/settle");
+  const { messageView } = await import("@/lib/agent-api");
+  const { upsertApiUser } = await import("@/lib/company");
+  const { acme } = await world();
+
+  const user = (await upsertApiUser(acme.workspace, "cust_busy_heal", {}))!.user;
+  const job = await createJob({
+    ownerUserId: user.id,
+    source: "api",
+    webThreadId: "t_busy_heal",
+    prompt: "What happened to Nifty 500?",
+  });
+  await patchJob(job.id, user.id, { status: "dispatched", cursorAgentId: "bc-test-agent" });
+  await appendStreamEvents(job.id, user.id, [
+    {
+      type: "block",
+      block: {
+        kind: "card",
+        tone: "warning",
+        title: "Nifty 500 — last 5 trading sessions",
+        fields: [{ label: "Net change", value: "−1.96%" }],
+      },
+    },
+  ]);
+  await patchJob(job.id, user.id, {
+    status: "error",
+    error: "Your agent is still working on the previous message. Try again when it replies.",
+  });
+
+  const healed = await reconcileErroredJob((await getJob(job.id))!);
+  assert.equal(healed.status, "replied");
+  assert.equal(healed.error, undefined);
+  const view = messageView(healed);
+  assert.equal(view.status, "completed");
+  assert.equal(view.error, undefined);
+  assert.ok(view.blocks.some((b) => b.kind === "card"));
 });

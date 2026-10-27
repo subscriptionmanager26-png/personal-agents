@@ -362,7 +362,21 @@ async function tryReviveFromCursorRun(job: Job, agentId: string, runId: string):
   }
 }
 
-/** Settle jobs wrongly left in error after the agent already ran (e.g. stale 409 busy). */
+function captionFromStreamBlocks(job: Job) {
+  const titles = (job.stream ?? []).flatMap((e) =>
+    e.type === "block" && (e.block.kind === "card" || e.block.kind === "table" || e.block.kind === "chart") && "title" in e.block && e.block.title
+      ? [e.block.title]
+      : [],
+  );
+  if (!titles.length) return "Here is what I found.";
+  return `Here is what I found (${[...new Set(titles)].join("; ")}).`;
+}
+
+/**
+ * Settle jobs wrongly left in error after the agent already ran (e.g. stale 409 busy).
+ * If Cursor text is gone but MCP already streamed cards/charts, complete the job with those blocks
+ * instead of leaving a permanent false failure.
+ */
 export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promise<Job> {
   if (job.status !== "error") return job;
 
@@ -371,43 +385,62 @@ export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promis
     return ensureFullReply((await getJob(job.id, { fresh: true })) ?? job);
   }
 
+  const recoverable = isRecoverableThreadError(job.error) || hasStreamBlocks(job);
+  if (!recoverable) return job;
+
   const agentId = await resolveCursorAgentId(job);
   const runId = resolveRunId(job);
-  const shouldRetry =
-    Boolean(agentId) && (isRecoverableThreadError(job.error) || hasStreamBlocks(job));
-  if (!shouldRetry) return job;
 
-  if (runId) {
-    let row = await tryReviveFromCursorRun(job, agentId!, runId);
+  if (agentId && runId) {
+    let row = await tryReviveFromCursorRun(job, agentId, runId);
     if (row.status === "replied") return ensureFullReply(row);
   }
 
-  await patchJob(job.id, job.ownerUserId, { status: "dispatched", error: undefined });
-  if (runId && !job.cursorRunId) {
-    await patchJob(job.id, job.ownerUserId, { cursorAgentId: agentId, cursorRunId: runId });
-  }
-  await settleIfFinished((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
-  let row = (await getJob(job.id, { fresh: true })) ?? job;
-  if (row.status !== "replied") {
-    await settleJob(job.id, job.ownerUserId).catch(() => undefined);
-    row = (await getJob(job.id, { fresh: true })) ?? row;
-  }
-  if (row.status === "replied") return ensureFullReply(row);
+  if (agentId) {
+    await patchJob(job.id, job.ownerUserId, {
+      status: "dispatched",
+      error: undefined,
+      cursorAgentId: agentId,
+      ...(runId && !job.cursorRunId ? { cursorRunId: runId } : {}),
+    });
+    await settleIfFinished((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
+    let row = (await getJob(job.id, { fresh: true })) ?? job;
+    if (row.status !== "replied") {
+      await settleJob(job.id, job.ownerUserId).catch(() => undefined);
+      row = (await getJob(job.id, { fresh: true })) ?? row;
+    }
+    if (row.status === "replied") {
+      const text = row.reply?.message?.trim() ?? "";
+      // settleJob may have written a useless placeholder when Cursor had nothing for this run
+      if (text && !text.startsWith("Agent status:") && text !== "Agent finished with no message.") {
+        return ensureFullReply(row);
+      }
+    }
 
-  if (runId) {
-    row = await tryReviveFromCursorRun(row, agentId!, runId);
-    if (row.status === "replied") return ensureFullReply(row);
-  }
+    if (runId) {
+      row = await tryReviveFromCursorRun(row.status === "error" ? job : row, agentId, runId);
+      if (row.status === "replied") return ensureFullReply(row);
+    }
 
-  const peers = threadPeers ?? [];
-  if (peers.length && agentId) {
-    const turnText = await fetchAssistantMessageForThreadJob(job.ownerUserId, agentId, job, peers);
-    if (turnText && turnText.length >= 40 && !turnText.startsWith("Agent status:")) {
-      return ensureFullReply(await markJobReplied(job, turnText, "Recovered from thread agent conversation"));
+    const peers = threadPeers ?? [];
+    if (peers.length) {
+      const turnText = await fetchAssistantMessageForThreadJob(job.ownerUserId, agentId, job, peers).catch(() => "");
+      if (turnText && turnText.length >= 40 && !turnText.startsWith("Agent status:")) {
+        return ensureFullReply(await markJobReplied(job, turnText, "Recovered from thread agent conversation"));
+      }
     }
   }
 
-  return row;
+  // Last resort for this bug class: agent already showed UI; don't keep the false busy failure.
+  if (hasStreamBlocks(job) && isRecoverableThreadError(job.error)) {
+    return markJobReplied(
+      job,
+      captionFromStreamBlocks(job),
+      "Completed from streamed UI after false busy error",
+    );
+  }
+
+  return (await getJob(job.id, { fresh: true })) ?? job;
 }
 
 export async function ensureFullReply(job: Job): Promise<Job> {

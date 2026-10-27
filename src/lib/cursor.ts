@@ -14,7 +14,7 @@ import {
   type McpServerDef,
 } from "@/lib/cursor-api";
 import { ensurePersonalRepo, syncWorkspaceSkills } from "@/lib/github";
-import { patchJob } from "@/lib/jobs";
+import { getJob, patchJob } from "@/lib/jobs";
 import { getKiteConnection, KITE_MCP_NAME } from "@/lib/kite";
 import { mockRunId } from "@/lib/mock-trace";
 import { buildPersonalAgentPrompt } from "@/lib/prompt";
@@ -38,6 +38,24 @@ function reachableServerUrl(url: string, base: string | undefined) {
 }
 
 async function failJob(job: Job, userId: string, detail: string) {
+  const current = await getJob(job.id, { fresh: true });
+  // Never clobber a job that already started in Cursor — that leaves stream UI stuck under a false "busy" error.
+  if (
+    current &&
+    (current.status === "dispatched" ||
+      current.status === "delivering" ||
+      current.status === "replied" ||
+      Boolean(current.cursorRunId) ||
+      (current.stream ?? []).some((e) => e.type === "block"))
+  ) {
+    console.warn("[dispatch] refuse failJob on active job", {
+      jobId: job.id,
+      status: current.status,
+      hasRun: Boolean(current.cursorRunId),
+      detail: detail.slice(0, 120),
+    });
+    return;
+  }
   await patchJob(job.id, userId, { status: "error", error: detail, event: { type: "error", detail } });
 }
 
