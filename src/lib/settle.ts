@@ -208,7 +208,8 @@ export async function settleIfFinished(job: Job) {
 
 /** Fix stale job rows and settle with Cursor when a finished run was never delivered. */
 export async function reconcileJob(job: Job): Promise<Job> {
-  if (job.status === "replied" || job.status === "error") return job;
+  if (job.status === "replied") return ensureFullReply(job);
+  if (job.status === "error") return job;
 
   const stream = job.stream ?? [];
   const doneAt = stream.find((e) => e.type === "done")?.at;
@@ -221,12 +222,20 @@ export async function reconcileJob(job: Job): Promise<Job> {
     return (await getJob(job.id, { fresh: true })) ?? job;
   }
   if (doneAt) {
-    const message = replyTextFromStream(job) || "Done.";
+    let message = replyTextFromStream(job) || "Done.";
+    if (job.cursorAgentId) {
+      try {
+        const full = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+        if (full && !full.startsWith("Agent status:") && full.length > message.length) message = full;
+      } catch {
+        // keep stream-derived text
+      }
+    }
     await patchJob(job.id, job.ownerUserId, {
       status: "replied",
       reply: { message, receivedAt: doneAt },
     });
-    return (await getJob(job.id, { fresh: true })) ?? job;
+    return ensureFullReply((await getJob(job.id, { fresh: true })) ?? job);
   }
 
   if (job.status === "queued") {
@@ -288,6 +297,36 @@ export async function reconcileActiveJobsInThread(
 }
 
 /** Clear stale in-flight jobs so a new user message can start (cancel Cursor runs if needed). */
+/** Backfill job.reply from Cursor when the stream only captured part of the answer. */
+function storedReplyMarkdownLength(job: Job) {
+  const fromStream = (job.stream ?? []).flatMap((e) =>
+    e.type === "block" && e.block.kind === "markdown" && e.block.text ? [e.block.text] : [],
+  );
+  const stored = job.reply?.message?.trim() ?? "";
+  return Math.max(stored.length, fromStream.join("\n\n").length);
+}
+
+export async function ensureFullReply(job: Job): Promise<Job> {
+  if (job.status !== "replied" || !job.cursorAgentId) return job;
+  const stored = job.reply?.message?.trim() ?? "";
+  const seenLen = storedReplyMarkdownLength(job);
+  if (stored.length > 120 && stored.length >= seenLen * 0.85) return job;
+
+  try {
+    const full = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    if (!full || full.startsWith("Agent status:") || full.length <= stored.length + 40) return job;
+    await patchJob(job.id, job.ownerUserId, {
+      reply: {
+        message: full,
+        receivedAt: job.reply?.receivedAt ?? new Date().toISOString(),
+      },
+    });
+    return (await getJob(job.id, { fresh: true })) ?? job;
+  } catch {
+    return job;
+  }
+}
+
 export async function releaseThreadForNewMessage(
   ownerUserId: string,
   source: JobSource,
@@ -296,6 +335,11 @@ export async function releaseThreadForNewMessage(
   let active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
   if (!active.length) return;
 
+  for (const job of active) {
+    await settleIfFinished(job).catch(() => undefined);
+  }
+
+  active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
   for (const job of active) {
     if (job.cursorAgentId && job.cursorRunId) {
       try {
@@ -306,14 +350,17 @@ export async function releaseThreadForNewMessage(
         // continue
       }
     }
-    await settleIfFinished(job).catch(() => undefined);
+    await settleJob(job.id, job.ownerUserId).catch(() => undefined);
+    await ensureFullReply(await getJob(job.id, { fresh: true }) ?? job).catch(() => undefined);
   }
 
   active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
   for (const job of active) {
+    const fresh = (await getJob(job.id, { fresh: true })) ?? job;
+    if (fresh.status === "replied" && fresh.reply?.message?.trim()) continue;
     await patchJob(job.id, job.ownerUserId, {
       status: "error",
-      error: "This message was stopped so you could send a new one.",
+      error: "This message was interrupted before it finished. Ask again if you need the rest.",
       event: { type: "error", detail: "Superseded by a new message" },
     });
   }

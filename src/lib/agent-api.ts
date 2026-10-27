@@ -1,4 +1,4 @@
-import { clientAction, clientBlock, clientError, clientStreamEvent } from "@/lib/client-text";
+import { clientAction, clientBlock, clientError, clientStreamEvent, clientText } from "@/lib/client-text";
 import { getJob, sortedJobsForUser } from "@/lib/jobs";
 import { getStore } from "@/lib/store";
 import { listOrders } from "@/lib/orders";
@@ -32,9 +32,31 @@ function viewStatus(job: Job): MessageView["status"] {
   return "working";
 }
 
+/** UI blocks: stream cards/tables plus the full assistant reply (stream often only has a prefix). */
+export function blocksForJob(job: Job): UiBlock[] {
+  const fromStream = (job.stream ?? []).flatMap((e) => (e.type === "block" ? [clientBlock(e.block)] : []));
+  const rich = fromStream.filter((b) => b.kind !== "markdown");
+  const replyText = job.reply?.message?.trim();
+
+  if (job.status === "replied" && replyText) {
+    const md = clientText(replyText);
+    return rich.length ? [{ kind: "markdown", text: md }, ...rich] : [{ kind: "markdown", text: md }];
+  }
+
+  if (!fromStream.length && replyText) {
+    return [{ kind: "markdown", text: clientText(replyText) }];
+  }
+
+  return fromStream;
+}
+
 /** The public shape of one message: what the user sent and everything the agent showed. */
 export function messageView(job: Job): MessageView {
   const stream = job.stream ?? [];
+  const completedAt =
+    job.status === "replied"
+      ? job.reply?.receivedAt
+      : stream.find((e) => e.type === "done")?.at;
   return {
     id: job.id,
     threadId: job.webThreadId ?? "main",
@@ -42,8 +64,8 @@ export function messageView(job: Job): MessageView {
     attachments: job.attachments ?? [],
     status: viewStatus(job),
     createdAt: job.createdAt,
-    completedAt: job.status === "replied" ? job.reply?.receivedAt : undefined,
-    blocks: stream.flatMap((e) => (e.type === "block" ? [clientBlock(e.block)] : [])),
+    completedAt,
+    blocks: blocksForJob(job),
     actions: stream.flatMap((e) => (e.type === "action_required" ? [clientAction(e.action)] : [])),
     error: job.status === "error" ? clientError(job.error) : undefined,
   };
@@ -82,7 +104,11 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
     if (examined > scanCap) break;
     if (job.source !== opts.source) continue;
     if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
-    const row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
+    let row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
+    if (row.status === "replied") {
+      const { ensureFullReply } = await import("@/lib/settle");
+      row = await ensureFullReply(row);
+    }
     out.push(safeMessageView(row));
     if (out.length >= limit) break;
   }
@@ -92,8 +118,10 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
 export async function getOwnedMessage(ownerUserId: string, messageId: string) {
   const job = await getJob(messageId, { fresh: true });
   if (!job || job.ownerUserId !== ownerUserId) return undefined;
-  const { reconcileJob } = await import("@/lib/settle");
-  return reconcileJob(job);
+  const { reconcileJob, ensureFullReply } = await import("@/lib/settle");
+  let row = await reconcileJob(job);
+  if (row.status === "replied") row = await ensureFullReply(row);
+  return row;
 }
 
 export function orderView(o: OrderProposal) {

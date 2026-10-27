@@ -1,7 +1,7 @@
 import { messageView } from "@/lib/agent-api";
 import { clientText } from "@/lib/client-text";
 import { listJobsForUser } from "@/lib/jobs";
-import { reconcileJob } from "@/lib/settle";
+import { ensureFullReply, reconcileJob } from "@/lib/settle";
 import { listWebThreadsForUser } from "@/lib/web-threads";
 import type { ActionRequired, Job, JobAttachment, UiBlock } from "@/lib/types";
 
@@ -38,15 +38,17 @@ export async function listChatThreads(ownerUserId: string, limit = 40): Promise<
 export async function listThreadJobs(ownerUserId: string, threadId: string) {
   const jobs = webJobs(await listJobsForUser(ownerUserId, 400)).filter((j) => (j.webThreadId ?? "main") === threadId);
   const slice = jobs.slice(0, 60).reverse();
-  return Promise.all(slice.map(async (job) => (ACTIVE.has(job.status) ? reconcileJob(job) : job)));
+  return Promise.all(
+    slice.map(async (job) => {
+      if (ACTIVE.has(job.status)) return reconcileJob(job);
+      if (job.status === "replied") return ensureFullReply(job);
+      return job;
+    }),
+  );
 }
 
 export function chatMessage(job: Job): ChatMessage {
   const view = messageView(job);
-  const blocks =
-    view.blocks.length || !job.reply?.message
-      ? view.blocks
-      : [{ kind: "markdown" as const, text: clientText(job.reply.message) }];
   const steps = (job.stream ?? []).flatMap((e) =>
     e.type === "status" && !GENERIC_STEPS.has(e.label) ? [clientText(e.label).replace(/…$/, "")] : [],
   );
@@ -54,7 +56,7 @@ export function chatMessage(job: Job): ChatMessage {
     id: view.id,
     text: view.text,
     attachments: view.attachments,
-    blocks,
+    blocks: view.blocks,
     actions: view.actions,
     status: view.status,
     error: view.error,
