@@ -1,4 +1,4 @@
-import { authenticateApiKey, getApiUser, isValidExternalId } from "@/lib/company";
+import { apiUserId, authenticateApiKey, getApiUser, isValidExternalId } from "@/lib/company";
 import { isStoreReadError } from "@/lib/store-errors";
 import type { PersonalUser, Workspace } from "@/lib/types";
 
@@ -42,6 +42,27 @@ export async function requireApiUser(
   const user = await getApiUser(auth.workspace, externalId);
   if (!user) return { response: apiError(404, "user_not_found", "Create the user with PUT /api/v1/users/{userId} first.") };
   return { workspace: auth.workspace, user, externalId };
+}
+
+/**
+ * Threads list hot path: API key (+ cache) and derive owner id without loading the user blob.
+ * Sync on login already created the user; index read does not need the profile row.
+ */
+export async function requireApiUserForThreads(
+  request: Request,
+  rawUserId: string,
+): Promise<{ workspace: Workspace; ownerUserId: string; externalId: string } | { response: Response }> {
+  const auth = await requireCompany(request);
+  if ("response" in auth) return auth;
+  const externalId = decodeParam(rawUserId);
+  if (!isValidExternalId(externalId)) {
+    return { response: apiError(400, "invalid_user_id", "User ids are 1-128 characters: letters, digits, . _ : @ -") };
+  }
+  return {
+    workspace: auth.workspace,
+    ownerUserId: apiUserId(auth.workspace.id, externalId),
+    externalId,
+  };
 }
 
 export async function readJson(request: Request): Promise<Record<string, unknown> | undefined> {

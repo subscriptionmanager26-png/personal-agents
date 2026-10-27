@@ -32,7 +32,7 @@ async function main() {
   console.log(
     `users=${Object.keys(store.users).length} jobs=${store.jobs.length} threads=${Object.keys(store.webThreads).length}`,
   );
-  console.log("Writing relational tables…");
+  console.log("Writing relational rows + thread indexes…");
   await writeRelationalStore(store);
   console.log(
     "Done. Set PERSONAL_AGENTS_RELATIONAL=1 on Vercel, verify /ai, then optionally PERSONAL_AGENTS_SKIP_BLOB_WRITE=1.",

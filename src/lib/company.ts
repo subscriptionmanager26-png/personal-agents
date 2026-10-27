@@ -79,11 +79,18 @@ export async function revokeApiKey(ownerUserId: string, workspaceId: string, key
   return ok;
 }
 
+const API_KEY_CACHE_MS = 60_000;
+const apiKeyCache = new Map<string, { workspace: Workspace; exp: number }>();
+
 /** Resolves the workspace for an `Authorization: Bearer pa_…` header. */
 export async function authenticateApiKey(authorization: string | null) {
   const match = authorization?.match(/^Bearer\s+pa_([a-f0-9]{12})_([A-Za-z0-9_-]{20,})$/);
   if (!match) return undefined;
   const [, keyId, secret] = match;
+  const cacheKey = `${keyId}:${hashSecret(secret)}`;
+  const hit = apiKeyCache.get(cacheKey);
+  if (hit && hit.exp > Date.now()) return hit.workspace;
+
   const store = await getStore();
   const expected = Buffer.from(hashSecret(secret), "hex");
   for (const ws of Object.values(store.workspaces)) {
@@ -98,6 +105,8 @@ export async function authenticateApiKey(authorization: string | null) {
         if (k) k.lastUsedAt = new Date().toISOString();
       });
     }
+    if (apiKeyCache.size > 64) apiKeyCache.clear();
+    apiKeyCache.set(cacheKey, { workspace: ws, exp: Date.now() + API_KEY_CACHE_MS });
     return ws;
   }
   return undefined;

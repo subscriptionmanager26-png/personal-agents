@@ -11,8 +11,10 @@ import type { Job, JobSource, PersonalUser, StoreData, WebThread } from "@/lib/t
  *   pa:u:{ownerUserId}
  *   pa:t:{owner}:{source}:{threadId}
  *   pa:j:{jobId}
+ *   pa:idx:threads:{owner}:{source}  — O(1) sidebar list
  */
 const TABLE = "personal_agents_store";
+export const THREAD_INDEX_LIMIT = 40;
 
 function threadStoreKey(ownerUserId: string, source: "web" | "api", threadId: string) {
   return `${ownerUserId}:${source}:${threadId}`;
@@ -34,6 +36,9 @@ function threadRowId(ownerUserId: string, source: string, threadId: string) {
 }
 function jobRowId(jobId: string) {
   return `pa:j:${enc(jobId)}`;
+}
+export function threadIndexRowId(ownerUserId: string, source: string) {
+  return `pa:idx:threads:${enc(ownerUserId)}:${enc(source)}`;
 }
 
 /**
@@ -77,6 +82,33 @@ type StoredGlobal = {
   auditEvents: StoreData["auditEvents"];
 };
 
+export type ThreadIndexEntry = {
+  id: string;
+  title: string;
+  updatedAt: string;
+  working: boolean;
+};
+
+type StoredThreadIndex = {
+  kind: "thread_index";
+  ownerUserId: string;
+  source: "web" | "api";
+  threads: ThreadIndexEntry[];
+};
+
+function threadToIndexEntry(thread: WebThread): ThreadIndexEntry {
+  return {
+    id: thread.id,
+    title: thread.title || "New chat",
+    updatedAt: thread.updatedAt,
+    working: Boolean(thread.working),
+  };
+}
+
+function sortIndexEntries(entries: ThreadIndexEntry[]) {
+  return [...entries].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+}
+
 async function upsertRow(id: string, data: unknown, updatedAt?: string) {
   const supabase = getSupabaseAdmin();
   const { error } = await supabase.from(TABLE).upsert({
@@ -104,6 +136,79 @@ export async function upsertWebThreadRow(thread: WebThread): Promise<void> {
     thread.updatedAt,
   );
   if (error) console.error("[store-relational] upsert thread", thread.id, error.message);
+  await upsertThreadIndexEntry(thread).catch((err) =>
+    console.error("[store-relational] thread index", thread.id, err),
+  );
+}
+
+/** Merge one thread into the per-user sidebar index (primary-key row). */
+export async function upsertThreadIndexEntry(thread: WebThread): Promise<void> {
+  if (!dualWriteRelationalEnabled()) return;
+  if (thread.id === "main") return;
+  const supabase = getSupabaseAdmin();
+  const indexId = threadIndexRowId(thread.ownerUserId, thread.source);
+  const { data: existing, error: readErr } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", indexId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+
+  const prev = (existing?.data as StoredThreadIndex | undefined)?.threads ?? [];
+  const nextMap = new Map(prev.filter((t) => t.id !== "main").map((t) => [t.id, t]));
+  nextMap.set(thread.id, threadToIndexEntry(thread));
+  const threads = sortIndexEntries([...nextMap.values()]).slice(0, THREAD_INDEX_LIMIT);
+  const payload: StoredThreadIndex = {
+    kind: "thread_index",
+    ownerUserId: thread.ownerUserId,
+    source: thread.source,
+    threads,
+  };
+  const error = await upsertRow(indexId, payload, thread.updatedAt);
+  if (error) throw error;
+}
+
+/** O(1) sidebar read. Returns null if the index row is missing (caller should rebuild). */
+export async function readThreadIndex(
+  ownerUserId: string,
+  source: "web" | "api",
+  limit = THREAD_INDEX_LIMIT,
+): Promise<ThreadIndexEntry[] | null> {
+  if (!supabaseStoreConfigured()) return null;
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", threadIndexRowId(ownerUserId, source))
+    .maybeSingle();
+  if (error) throw error;
+  if (!data?.data) return null;
+  const stored = data.data as StoredThreadIndex;
+  if (stored.kind !== "thread_index" || !Array.isArray(stored.threads)) return null;
+  return sortIndexEntries(stored.threads.filter((t) => t.id !== "main")).slice(0, limit);
+}
+
+/** Scan pa:t:* once, write index, return entries. */
+export async function rebuildThreadIndex(
+  ownerUserId: string,
+  source: "web" | "api",
+  limit = THREAD_INDEX_LIMIT,
+): Promise<ThreadIndexEntry[]> {
+  const rows = await listWebThreadRows(ownerUserId, source, Math.max(limit, THREAD_INDEX_LIMIT));
+  const threads = sortIndexEntries(
+    rows.filter((t) => t.id !== "main").map(threadToIndexEntry),
+  ).slice(0, limit);
+  if (dualWriteRelationalEnabled()) {
+    const payload: StoredThreadIndex = {
+      kind: "thread_index",
+      ownerUserId,
+      source,
+      threads,
+    };
+    const error = await upsertRow(threadIndexRowId(ownerUserId, source), payload);
+    if (error) console.error("[store-relational] rebuild index", error.message);
+  }
+  return threads;
 }
 
 async function listRowsByPrefix(prefix: string): Promise<Array<{ id: string; data: unknown; updated_at: string }>> {
@@ -237,6 +342,24 @@ export async function writeRelationalStore(store: StoreData): Promise<void> {
       payload,
       thread.updatedAt || now,
     );
+    if (error) throw error;
+  }
+
+  // Rebuild sidebar indexes per owner+source (O(1) list path).
+  const indexGroups = new Map<string, WebThread[]>();
+  for (const thread of Object.values(store.webThreads ?? {})) {
+    if (thread.id === "main") continue;
+    const key = `${thread.ownerUserId}\0${thread.source}`;
+    const list = indexGroups.get(key) ?? [];
+    list.push(thread);
+    indexGroups.set(key, list);
+  }
+  for (const [, group] of indexGroups) {
+    const ownerUserId = group[0]!.ownerUserId;
+    const source = group[0]!.source;
+    const threads = sortIndexEntries(group.map(threadToIndexEntry)).slice(0, THREAD_INDEX_LIMIT);
+    const payload: StoredThreadIndex = { kind: "thread_index", ownerUserId, source, threads };
+    const error = await upsertRow(threadIndexRowId(ownerUserId, source), payload, now);
     if (error) throw error;
   }
 
