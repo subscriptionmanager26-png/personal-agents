@@ -291,6 +291,18 @@ function longestText(...parts: (string | undefined)[]) {
     .sort((a, b) => b.length - a.length)[0];
 }
 
+/** Text for one specific run only (safe for older jobs in a multi-turn thread). */
+export async function fetchAssistantTextForRun(ownerUserId: string, agentId: string, runId: string) {
+  if (agentId.startsWith("mock-")) return "Mock agent completed.";
+  const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
+  try {
+    const run = await getRun(key, agentId, runId);
+    return run.result?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export async function fetchFinalAssistantMessage(ownerUserId: string, agentId: string, runId?: string) {
   if (agentId.startsWith("mock-")) {
     return "Mock agent completed.";
@@ -298,16 +310,15 @@ export async function fetchFinalAssistantMessage(ownerUserId: string, agentId: s
   const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
   let fromRun: string | undefined;
   if (runId) {
-    try {
-      const run = await getRun(key, agentId, runId);
-      if (run.result?.trim()) fromRun = run.result.trim();
-    } catch {
-      // fall back to conversation when this run has no stored result
+    fromRun = await fetchAssistantTextForRun(ownerUserId, agentId, runId);
+    if (fromRun) {
+      const fromConversation = await lastAssistantFromConversation(key, agentId).catch(() => "");
+      const best = longestText(fromRun, fromConversation);
+      if (best) return best;
     }
   }
   const fromConversation = await lastAssistantFromConversation(key, agentId).catch(() => "");
-  const best = longestText(fromRun, fromConversation);
-  if (best) return best;
+  if (fromConversation) return fromConversation;
   const agent = await getAgent(key, agentId);
   return `Agent status: ${agent.status || "unknown"}`;
 }

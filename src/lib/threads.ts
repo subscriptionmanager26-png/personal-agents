@@ -48,7 +48,7 @@ export async function listThreadJobs(ownerUserId: string, threadId: string) {
   return Promise.all(
     rows.map(async (job) => {
       let row = job;
-      if (row.status === "error") row = await reconcileErroredJob(row, rows);
+      if (row.status === "error") row = await reconcileErroredJob(row);
       if (row.status === "replied") row = await ensureFullReply(row);
       return row;
     }),

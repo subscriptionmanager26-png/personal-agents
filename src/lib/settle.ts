@@ -1,5 +1,5 @@
 import { clientText } from "@/lib/client-text";
-import { fetchFinalAssistantMessage } from "@/lib/cursor";
+import { fetchAssistantTextForRun, fetchFinalAssistantMessage } from "@/lib/cursor";
 import { runtimeForUserId } from "@/lib/runtime";
 import { getJob, listDispatchedJobs, patchJob, sortedJobsForUser } from "@/lib/jobs";
 import { getStoreFresh } from "@/lib/store";
@@ -317,10 +317,6 @@ function isRecoverableThreadError(error?: string) {
   );
 }
 
-function isResendFollowUp(prompt: string) {
-  return /resend|send again|repeat (?:the |my )?(?:previous|last) message|previous message/i.test(prompt);
-}
-
 async function tryReviveFromCursorRun(job: Job): Promise<Job> {
   if (!job.cursorAgentId || !job.cursorRunId) return job;
   const { getRun, TERMINAL_RUN_STATUSES } = await import("@/lib/cursor-api");
@@ -330,8 +326,8 @@ async function tryReviveFromCursorRun(job: Job): Promise<Job> {
     const run = await getRun(key, job.cursorAgentId, job.cursorRunId);
     const st = (run.status || "").toUpperCase();
     if (!TERMINAL_RUN_STATUSES.includes(st)) return job;
-    let message = run.result?.trim() || "";
-    if (!message || message.length < 80) {
+    let message = await fetchAssistantTextForRun(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    if (!message && (await isLatestJobOnAgent(job))) {
       message = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
     }
     if (!message || message.startsWith("Agent status:") || message.length < 40) return job;
@@ -346,35 +342,36 @@ async function tryReviveFromCursorRun(job: Job): Promise<Job> {
   }
 }
 
-/** Jobs marked error after the agent already streamed UI, or after a later “resend” succeeded. */
-export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promise<Job> {
+/** Settle jobs wrongly left in error after the agent already ran (e.g. stale 409 busy). */
+export async function reconcileErroredJob(job: Job): Promise<Job> {
   if (job.status !== "error") return job;
-  if (!isRecoverableThreadError(job.error) && !hasStreamBlocks(job)) return job;
+
   if (job.reply?.message?.trim()) {
-    await patchJob(job.id, job.ownerUserId, { status: "replied" });
-    return (await getJob(job.id, { fresh: true })) ?? job;
+    await patchJob(job.id, job.ownerUserId, { status: "replied", error: undefined });
+    return ensureFullReply((await getJob(job.id, { fresh: true })) ?? job);
   }
+
+  const shouldRetrySettle =
+    Boolean(job.cursorAgentId && job.cursorRunId) &&
+    (isRecoverableThreadError(job.error) || hasStreamBlocks(job));
+
+  if (!shouldRetrySettle) return job;
 
   let row = await tryReviveFromCursorRun(job);
   if (row.status === "replied") return ensureFullReply(row);
 
-  const peers = threadPeers ?? [];
-  const donor = peers
-    .filter((j) => j.id !== job.id && j.status === "replied" && Date.parse(j.createdAt) > Date.parse(job.createdAt))
-    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
-    .find((j) => isResendFollowUp(j.prompt));
-  const donorText = donor?.reply?.message?.trim();
-  if (!donor || !donorText || donorText.length < 200) return job;
+  await patchJob(job.id, job.ownerUserId, { status: "dispatched", error: undefined });
+  await settleIfFinished((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
+  row = (await getJob(job.id, { fresh: true })) ?? job;
+  if (row.status !== "replied") {
+    await settleJob(job.id, job.ownerUserId).catch(() => undefined);
+    row = (await getJob(job.id, { fresh: true })) ?? row;
+  }
+  if (row.status === "replied") return ensureFullReply(row);
+  row = await tryReviveFromCursorRun(row);
+  if (row.status === "replied") return ensureFullReply(row);
 
-  await patchJob(job.id, job.ownerUserId, {
-    status: "replied",
-    reply: {
-      message: donorText,
-      receivedAt: donor.reply?.receivedAt ?? new Date().toISOString(),
-    },
-    event: { type: "replied", detail: "Recovered from follow-up resend in thread" },
-  });
-  return ensureFullReply((await getJob(job.id, { fresh: true })) ?? job);
+  return row;
 }
 
 export async function ensureFullReply(job: Job): Promise<Job> {
@@ -382,14 +379,10 @@ export async function ensureFullReply(job: Job): Promise<Job> {
   const stored = job.reply?.message?.trim() ?? "";
 
   try {
-    let full = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
-    if (job.cursorRunId && !(await isLatestJobOnAgent(job))) {
-      const { getRun } = await import("@/lib/cursor-api");
-      const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
-      const runOnly = await getRun(key, job.cursorAgentId, job.cursorRunId).catch(() => null);
-      const runText = runOnly?.result?.trim();
-      if (runText) full = runText;
-    }
+    const full =
+      job.cursorRunId && !(await isLatestJobOnAgent(job))
+        ? await fetchAssistantTextForRun(job.ownerUserId, job.cursorAgentId, job.cursorRunId)
+        : await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
     if (!full || full.startsWith("Agent status:") || full.length <= stored.length + 40) return job;
     await patchJob(job.id, job.ownerUserId, {
       reply: {
@@ -417,6 +410,12 @@ export async function releaseThreadForNewMessage(
 
   active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
   for (const job of active) {
+    await settleJob(job.id, job.ownerUserId).catch(() => undefined);
+    await ensureFullReply((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
+  }
+
+  active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
+  for (const job of active) {
     if (job.cursorAgentId && job.cursorRunId) {
       try {
         const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
@@ -426,18 +425,16 @@ export async function releaseThreadForNewMessage(
         // continue
       }
     }
+    await settleIfFinished((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
     await settleJob(job.id, job.ownerUserId).catch(() => undefined);
-    await ensureFullReply(await getJob(job.id, { fresh: true }) ?? job).catch(() => undefined);
+    await ensureFullReply((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
   }
 
   active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
   for (const job of active) {
-    let fresh = (await getJob(job.id, { fresh: true })) ?? job;
+    const fresh = (await getJob(job.id, { fresh: true })) ?? job;
     if (fresh.status === "replied" && fresh.reply?.message?.trim()) continue;
-    if (hasStreamBlocks(fresh)) {
-      fresh = await tryReviveFromCursorRun(fresh);
-      if (fresh.status === "replied" && fresh.reply?.message?.trim()) continue;
-    }
+    if (fresh.status === "error") continue;
     await patchJob(job.id, job.ownerUserId, {
       status: "error",
       error: "This message was interrupted before it finished. Ask again if you need the rest.",
