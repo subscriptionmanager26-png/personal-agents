@@ -25,7 +25,7 @@ export async function GET(request: Request, { params }: Params) {
 
     const body = JSON.stringify({ threads });
     const etag = `"t${threads.length}-${hashQuick(body)}"`;
-    const inm = request.headers.get("if-none-match");
+    const inm = normalizeEtag(request.headers.get("if-none-match"));
     if (inm && inm === etag) {
       return new Response(null, {
         status: 304,
@@ -61,4 +61,11 @@ function hashQuick(s: string) {
     h = Math.imul(h, 16777619);
   }
   return (h >>> 0).toString(36);
+}
+
+/** Vercel/CDN may prefix ETags with W/; browsers echo that on If-None-Match. */
+function normalizeEtag(value: string | null) {
+  if (!value) return null;
+  const first = value.split(",")[0]?.trim() ?? "";
+  return first.replace(/^W\//i, "") || null;
 }
