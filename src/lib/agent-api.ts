@@ -1,6 +1,6 @@
 import { clientAction, clientBlock, clientError, clientStreamEvent, clientText } from "@/lib/client-text";
 import { getJob, sortedJobsForUser } from "@/lib/jobs";
-import { getStore } from "@/lib/store";
+import { getStore, getStoreFresh } from "@/lib/store";
 import { listOrders } from "@/lib/orders";
 import type { ActionRequired, Job, JobAttachment, OrderProposal, StreamEvent, UiBlock } from "@/lib/types";
 
@@ -109,7 +109,7 @@ const ACTIVE_MESSAGE = new Set(["queued", "dispatched", "delivering"]);
 
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-  const store = await getStore();
+  const store = await getStoreFresh();
   const scanCap = opts.threadId ? 400 : 250;
   const out: MessageView[] = [];
   let examined = 0;
@@ -126,7 +126,7 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
     if (rows.length >= limit) break;
   }
   for (let i = 0; i < rows.length; i += 1) {
-    if (rows[i].status === "error") rows[i] = await reconcileErroredJob(rows[i]);
+    if (rows[i].status === "error") rows[i] = await reconcileErroredJob(rows[i], rows);
     if (rows[i].status === "replied") rows[i] = await ensureFullReply(rows[i]);
     out.push(safeMessageView(rows[i]));
   }
@@ -138,7 +138,13 @@ export async function getOwnedMessage(ownerUserId: string, messageId: string) {
   if (!job || job.ownerUserId !== ownerUserId) return undefined;
   const { reconcileJob, reconcileErroredJob, ensureFullReply } = await import("@/lib/settle");
   let row = await reconcileJob(job);
-  if (row.status === "error") row = await reconcileErroredJob(row);
+  if (row.status === "error") {
+    const store = await getStoreFresh();
+    const peers = sortedJobsForUser(store, ownerUserId).filter(
+      (j) => j.source === row.source && (j.webThreadId ?? "main") === (row.webThreadId ?? "main"),
+    );
+    row = await reconcileErroredJob(row, peers);
+  }
   if (row.status === "replied") row = await ensureFullReply(row);
   return row;
 }

@@ -228,6 +228,7 @@ export async function patchJob(
     const { event, ...rest } = patch;
     const previous = job.status;
     Object.assign(job, rest, { updatedAt: new Date().toISOString() });
+    if ("error" in patch && patch.error === undefined) delete job.error;
     pushStream(job, lifecycleEvents(job, previous));
     if (event) {
       job.events.push({

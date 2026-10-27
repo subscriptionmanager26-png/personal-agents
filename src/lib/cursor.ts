@@ -292,6 +292,33 @@ function longestText(...parts: (string | undefined)[]) {
 }
 
 /** Text for one specific run only (safe for older jobs in a multi-turn thread). */
+function assistantMessages(conversation: { messages?: { type?: string; role?: string; text?: string }[] }) {
+  return (conversation.messages ?? []).filter((m) => {
+    const role = (m.type || m.role || "").toLowerCase();
+    return role.includes("assistant") || role === "ai_message";
+  });
+}
+
+/** Map this job to the Nth assistant message on the thread agent (not always the latest). */
+export async function fetchAssistantMessageForThreadJob(
+  ownerUserId: string,
+  agentId: string,
+  job: Job,
+  threadJobs: Job[],
+) {
+  const peers = threadJobs
+    .filter((j) => j.source === job.source && (j.webThreadId ?? "main") === (job.webThreadId ?? "main"))
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const turn = peers.findIndex((j) => j.id === job.id);
+  if (turn < 0) return "";
+  const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
+  const conversation = await getAgentConversation(key, agentId);
+  const assistants = assistantMessages(conversation);
+  if (turn >= assistants.length) return "";
+  if (assistants.length < peers.length && turn < peers.length - 1) return "";
+  return assistants[turn]?.text?.trim() ?? "";
+}
+
 export async function fetchAssistantTextForRun(ownerUserId: string, agentId: string, runId: string) {
   if (agentId.startsWith("mock-")) return "Mock agent completed.";
   const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
