@@ -147,6 +147,21 @@ const UI_TOOLS: McpTool[] = [
     },
   },
   {
+    name: "show_reply",
+    description:
+      "Send your final prose reply to the client. Call this ONCE at the very end of every response, after all show_card / show_chart / show_table calls. " +
+      "The text appears directly in the client's chat. Keep it concise — the cards and charts already carry the numbers. " +
+      "Do NOT duplicate data you already showed in a card or chart; instead refer to it briefly (e.g. 'See the chart above for the day-by-day breakdown.'). " +
+      "If you have nothing useful to add beyond the visuals, still call this with a one-sentence summary so the client knows the response is complete.",
+    inputSchema: {
+      type: "object",
+      required: ["text"],
+      properties: {
+        text: { type: "string", maxLength: 4000, description: "Your reply in Markdown. Paragraphs, bold, lists are fine. No raw data tables — use show_table instead." },
+      },
+    },
+  },
+  {
     name: "request_login",
     description:
       "Ask the client to log in to a service (for example when a broker tool returns a login link). Then stop and wait for their next message.",
@@ -350,6 +365,16 @@ async function callUiTool(ownerUserId: string, jobId: string, name: string, args
       const result = name === "show_table" ? tableBlock(args) : name === "show_chart" ? chartBlock(args) : cardBlock(args);
       if ("error" in result) return toolText({ error: result.error }, true);
       return emit(ownerUserId, jobId, { type: "block", block: result.block });
+    }
+    case "show_reply": {
+      const text = str(args.text)?.trim().slice(0, 4000);
+      if (!text) return toolText({ error: "text is required" }, true);
+      // Emit the markdown block immediately so the SSE stream delivers it in real-time.
+      await emit(ownerUserId, jobId, { type: "block", block: { kind: "markdown", text } });
+      // Settle the job right now — no need to wait for Cursor's webhook or post-hoc fetch.
+      const { settleJob } = await import("@/lib/settle");
+      await settleJob(jobId, ownerUserId, { message: text });
+      return toolText({ ok: true });
     }
     case "request_login": {
       const service = str(args.service)?.trim().slice(0, 60);
