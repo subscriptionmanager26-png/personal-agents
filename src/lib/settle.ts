@@ -374,70 +374,54 @@ function captionFromStreamBlocks(job: Job) {
 
 /**
  * Settle jobs wrongly left in error after the agent already ran (e.g. stale 409 busy).
- * If Cursor text is gone but MCP already streamed cards/charts, complete the job with those blocks
- * instead of leaving a permanent false failure.
+ *
+ * Order matters: if MCP already streamed UI under a false busy/interrupted error, complete
+ * from those blocks first. Cursor fetches are best-effort enrichment and must not block healing
+ * (they can hang, throw, or clear fields before a "last resort" path runs).
  */
 export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promise<Job> {
   if (job.status !== "error") return job;
+
+  const busyOrInterrupted = isRecoverableThreadError(job.error);
+  const blocks = hasStreamBlocks(job);
 
   if (job.reply?.message?.trim()) {
     await patchJob(job.id, job.ownerUserId, { status: "replied", error: undefined });
     return ensureFullReply((await getJob(job.id, { fresh: true })) ?? job);
   }
 
-  const recoverable = isRecoverableThreadError(job.error) || hasStreamBlocks(job);
-  if (!recoverable) return job;
-
-  const agentId = await resolveCursorAgentId(job);
-  const runId = resolveRunId(job);
-
-  if (agentId && runId) {
-    let row = await tryReviveFromCursorRun(job, agentId, runId);
-    if (row.status === "replied") return ensureFullReply(row);
-  }
-
-  if (agentId) {
-    await patchJob(job.id, job.ownerUserId, {
-      status: "dispatched",
-      error: undefined,
-      cursorAgentId: agentId,
-      ...(runId && !job.cursorRunId ? { cursorRunId: runId } : {}),
-    });
-    await settleIfFinished((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
-    let row = (await getJob(job.id, { fresh: true })) ?? job;
-    if (row.status !== "replied") {
-      await settleJob(job.id, job.ownerUserId).catch(() => undefined);
-      row = (await getJob(job.id, { fresh: true })) ?? row;
-    }
-    if (row.status === "replied") {
-      const text = row.reply?.message?.trim() ?? "";
-      // settleJob may have written a useless placeholder when Cursor had nothing for this run
-      if (text && !text.startsWith("Agent status:") && text !== "Agent finished with no message.") {
-        return ensureFullReply(row);
+  // Primary heal for job_e3f9-class failures: false busy + streamed card/chart, no narrative yet.
+  if (busyOrInterrupted && blocks) {
+    const agentId = await resolveCursorAgentId(job).catch(() => undefined);
+    const runId = resolveRunId(job);
+    if (agentId && runId) {
+      const revived = await tryReviveFromCursorRun(job, agentId, runId).catch(() => job);
+      if (revived.status === "replied" && (revived.reply?.message?.trim().length ?? 0) > 40) {
+        return ensureFullReply(revived);
       }
     }
-
-    if (runId) {
-      row = await tryReviveFromCursorRun(row.status === "error" ? job : row, agentId, runId);
-      if (row.status === "replied") return ensureFullReply(row);
-    }
-
-    const peers = threadPeers ?? [];
-    if (peers.length) {
-      const turnText = await fetchAssistantMessageForThreadJob(job.ownerUserId, agentId, job, peers).catch(() => "");
+    if (agentId && (threadPeers?.length ?? 0) > 0) {
+      const turnText = await fetchAssistantMessageForThreadJob(job.ownerUserId, agentId, job, threadPeers!).catch(
+        () => "",
+      );
       if (turnText && turnText.length >= 40 && !turnText.startsWith("Agent status:")) {
         return ensureFullReply(await markJobReplied(job, turnText, "Recovered from thread agent conversation"));
       }
     }
-  }
-
-  // Last resort for this bug class: agent already showed UI; don't keep the false busy failure.
-  if (hasStreamBlocks(job) && isRecoverableThreadError(job.error)) {
     return markJobReplied(
       job,
       captionFromStreamBlocks(job),
       "Completed from streamed UI after false busy error",
     );
+  }
+
+  if (!busyOrInterrupted && !blocks) return job;
+
+  const agentId = await resolveCursorAgentId(job).catch(() => undefined);
+  const runId = resolveRunId(job);
+  if (agentId && runId) {
+    const revived = await tryReviveFromCursorRun(job, agentId, runId).catch(() => job);
+    if (revived.status === "replied") return ensureFullReply(revived);
   }
 
   return (await getJob(job.id, { fresh: true })) ?? job;

@@ -126,8 +126,20 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
     if (rows.length >= limit) break;
   }
   for (let i = 0; i < rows.length; i += 1) {
-    if (rows[i].status === "error") rows[i] = await reconcileErroredJob(rows[i], rows);
-    if (rows[i].status === "replied") rows[i] = await ensureFullReply(rows[i]);
+    if (rows[i].status === "error") {
+      try {
+        rows[i] = await reconcileErroredJob(rows[i], rows);
+      } catch (error) {
+        console.error("[listMessages] reconcileErroredJob failed", rows[i].id, error);
+      }
+    }
+    if (rows[i].status === "replied") {
+      try {
+        rows[i] = await ensureFullReply(rows[i]);
+      } catch {
+        // keep settled row
+      }
+    }
     out.push(safeMessageView(rows[i]));
   }
   return out;
