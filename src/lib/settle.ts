@@ -382,7 +382,6 @@ function captionFromStreamBlocks(job: Job) {
 export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promise<Job> {
   if (job.status !== "error") return job;
 
-  const busyOrInterrupted = isRecoverableThreadError(job.error);
   const blocks = hasStreamBlocks(job);
 
   if (job.reply?.message?.trim()) {
@@ -390,8 +389,9 @@ export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promis
     return ensureFullReply((await getJob(job.id, { fresh: true })) ?? job);
   }
 
-  // Primary heal for job_e3f9-class failures: false busy + streamed card/chart, no narrative yet.
-  if (busyOrInterrupted && blocks) {
+  // Heal any errored job that already has MCP UI blocks (cards/charts/tables).
+  // We do NOT gate on the error string — previous heal attempts may have overwritten it.
+  if (blocks) {
     const agentId = await resolveCursorAgentId(job).catch(() => undefined);
     const runId = resolveRunId(job);
     if (agentId && runId) {
@@ -408,14 +408,12 @@ export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promis
         return ensureFullReply(await markJobReplied(job, turnText, "Recovered from thread agent conversation"));
       }
     }
-    return markJobReplied(
-      job,
-      captionFromStreamBlocks(job),
-      "Completed from streamed UI after false busy error",
-    );
+    // Always complete from streamed blocks — never leave this class of job as failed.
+    return markJobReplied(job, captionFromStreamBlocks(job), "Completed from streamed UI");
   }
 
-  if (!busyOrInterrupted && !blocks) return job;
+  // No blocks: only try Cursor if the error is one we recognise as internal.
+  if (!isRecoverableThreadError(job.error)) return job;
 
   const agentId = await resolveCursorAgentId(job).catch(() => undefined);
   const runId = resolveRunId(job);

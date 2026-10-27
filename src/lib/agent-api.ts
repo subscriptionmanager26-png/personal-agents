@@ -36,9 +36,13 @@ function isFalseBusyError(error?: string) {
   );
 }
 
-/** Jobs that already streamed UI but were wrongly marked busy/interrupted. */
+/**
+ * A job that has MCP-streamed UI (cards / charts / tables) should never show as failed.
+ * We check blocks only — not the error string — because previous heal attempts may have
+ * overwritten the original busy message with a Cursor API error.
+ */
 function isFalseBusyWithUi(job: Job) {
-  return job.status === "error" && isFalseBusyError(job.error) && streamHasBlocks(job);
+  return job.status === "error" && streamHasBlocks(job);
 }
 
 function viewStatus(job: Job): MessageView["status"] {
