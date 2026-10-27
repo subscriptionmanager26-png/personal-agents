@@ -1,5 +1,6 @@
 import { clientText } from "@/lib/client-text";
 import {
+  ensureJobRunBinding,
   fetchAssistantMessageForThreadJob,
   fetchAssistantTextForRun,
   fetchFinalAssistantMessage,
@@ -253,7 +254,17 @@ export async function reconcileJob(job: Job): Promise<Job> {
       });
       return (await getJob(job.id, { fresh: true })) ?? job;
     }
-    if (ageMs > 90_000 && !job.cursorAgentId) {
+    if (ageMs > 90_000 && !job.cursorRunId) {
+      // Prefer reclaiming a Cursor run already created for this job (lost patch)
+      // over createRun — that was how ghost conversation turns appeared.
+      const agentId = await resolveCursorAgentId(job).catch(() => undefined);
+      if (agentId) {
+        const bound = await ensureJobRunBinding(job, agentId).catch(() => undefined);
+        if (bound?.cursorRunId) {
+          await settleIfFinished(bound).catch(() => undefined);
+          return (await getJob(job.id, { fresh: true })) ?? bound;
+        }
+      }
       const { getUser } = await import("@/lib/users");
       const { dispatchJob } = await import("@/lib/cursor");
       const user = await getUser(job.ownerUserId);
@@ -392,7 +403,14 @@ export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promis
   // Heal any errored job that already has MCP UI blocks (cards/charts/tables).
   // We do NOT gate on the error string — previous heal attempts may have overwritten it.
   if (blocks) {
-    const agentId = await resolveCursorAgentId(job).catch(() => undefined);
+    let agentId = await resolveCursorAgentId(job).catch(() => undefined);
+    if (agentId && !job.cursorRunId) {
+      const bound = await ensureJobRunBinding(job, agentId).catch(() => undefined);
+      if (bound) {
+        job = bound;
+        agentId = bound.cursorAgentId ?? agentId;
+      }
+    }
     const runId = resolveRunId(job);
     if (agentId && runId) {
       const revived = await tryReviveFromCursorRun(job, agentId, runId).catch(() => job);
@@ -405,7 +423,7 @@ export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promis
         () => "",
       );
       if (turnText && turnText.length >= 40 && !turnText.startsWith("Agent status:")) {
-        return ensureFullReply(await markJobReplied(job, turnText, "Recovered from thread agent conversation"));
+        return ensureFullReply(await markJobReplied(job, turnText, "Recovered from bound Cursor run"));
       }
     }
     // Always complete from streamed blocks — never leave this class of job as failed.
@@ -447,6 +465,10 @@ export async function ensureFullReply(job: Job): Promise<Job> {
   if (!agentId) return job;
 
   try {
+    if (!job.cursorRunId) {
+      const bound = await ensureJobRunBinding(job, agentId).catch(() => undefined);
+      if (bound) job = bound;
+    }
     let full: string;
     if (job.cursorRunId) {
       // Run-specific fetch: safe in multi-turn threads because it only reads THIS run's result.

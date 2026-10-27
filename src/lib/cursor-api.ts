@@ -108,6 +108,22 @@ export async function getRun(token: string, agentId: string, runId: string) {
   return cursorGet<CursorRun>(token, `/v1/agents/${agentId}/runs/${runId}`);
 }
 
+export type CursorRunSummary = {
+  id: string;
+  agentId: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  durationMs?: number;
+  result?: string;
+};
+
+/** Newest-first list of runs for one cloud agent. */
+export async function listAgentRuns(token: string, agentId: string) {
+  const body = await cursorGet<{ items?: CursorRunSummary[] }>(token, `/v1/agents/${agentId}/runs`);
+  return body.items ?? [];
+}
+
 export type McpServerDef =
   | { name: string; type: "http" | "sse"; url: string; headers?: Record<string, string> }
   | { name: string; type: "stdio"; command: string; args?: string[]; env?: Record<string, string> };

@@ -131,23 +131,49 @@ function safeMessageView(job: Job): MessageView {
 
 const ACTIVE_MESSAGE = new Set(["queued", "dispatched", "delivering"]);
 
+function isSettledReply(job: Job) {
+  return job.status === "replied" && Boolean(job.reply?.message?.trim());
+}
+
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-  const store = await getStoreFresh();
-  const scanCap = opts.threadId ? 400 : 250;
-  const out: MessageView[] = [];
-  let examined = 0;
   const { reconcileJob, reconcileErroredJob, ensureFullReply } = await import("@/lib/settle");
+  const {
+    listJobRowsForThread,
+    listJobRowsForUser,
+    relationalStoreEnabled,
+  } = await import("@/lib/store-relational");
+
+  let candidates: Job[] = [];
+  if (relationalStoreEnabled()) {
+    try {
+      candidates = opts.threadId
+        ? await listJobRowsForThread(ownerUserId, opts.source, opts.threadId, limit)
+        : (await listJobRowsForUser(ownerUserId, Math.min(limit * 3, 100))).filter((j) => j.source === opts.source).slice(0, limit);
+    } catch {
+      candidates = [];
+    }
+  }
+  if (!candidates.length) {
+    const store = await getStoreFresh();
+    const scanCap = opts.threadId ? 400 : 250;
+    let examined = 0;
+    for (const job of sortedJobsForUser(store, ownerUserId)) {
+      examined += 1;
+      if (examined > scanCap) break;
+      if (job.source !== opts.source) continue;
+      if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
+      candidates.push(job);
+      if (candidates.length >= limit) break;
+    }
+  }
+
+  const out: MessageView[] = [];
   const rows: Job[] = [];
-  for (const job of sortedJobsForUser(store, ownerUserId)) {
-    examined += 1;
-    if (examined > scanCap) break;
-    if (job.source !== opts.source) continue;
-    if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
+  for (const job of candidates) {
+    // Settled replies: return as stored — never heal-on-read (avoids Cursor + store writes on every chat open).
     let row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
-    if (row.status === "replied") row = await ensureFullReply(row);
     rows.push(row);
-    if (rows.length >= limit) break;
   }
   for (let i = 0; i < rows.length; i += 1) {
     if (rows[i].status === "error") {
@@ -156,12 +182,12 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
       } catch (error) {
         console.error("[listMessages] reconcileErroredJob failed", rows[i].id, error);
       }
-    }
-    if (rows[i].status === "replied") {
+    } else if (rows[i].status === "replied" && !isSettledReply(rows[i])) {
+      // Incomplete settle (status replied but empty body) — enrich once.
       try {
         rows[i] = await ensureFullReply(rows[i]);
       } catch {
-        // keep settled row
+        // keep row
       }
     }
     out.push(safeMessageView(rows[i]));

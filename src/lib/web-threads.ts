@@ -1,5 +1,6 @@
 import { getStore, updateStore } from "@/lib/store";
 import { threadKey } from "@/lib/jobs";
+import { listWebThreadRows, relationalStoreEnabled, upsertWebThreadRow } from "@/lib/store-relational";
 import type { Job, JobSource, StoreData, WebThread } from "@/lib/types";
 
 export function webThreadStoreKey(ownerUserId: string, source: "web" | "api", threadId: string) {
@@ -40,6 +41,7 @@ export async function touchWebThread(input: {
     if (existing && existing.ownerUserId === input.ownerUserId) {
       existing.updatedAt = now;
       if (existing.title === "New chat" && title !== "New chat") existing.title = title;
+      void upsertWebThreadRow(existing).catch(() => undefined);
       return existing;
     }
     const thread: WebThread = {
@@ -51,6 +53,7 @@ export async function touchWebThread(input: {
       updatedAt: now,
     };
     store.webThreads[key] = thread;
+    void upsertWebThreadRow(thread).catch(() => undefined);
     return thread;
   });
 }
@@ -80,8 +83,44 @@ export async function updateWebThreadAgent(
     thread.cursorAgentId = cursorAgentId;
     thread.cursorAgentSkillsHash = cursorAgentSkillsHash;
     thread.updatedAt = now;
+    void upsertWebThreadRow(thread).catch(() => undefined);
     return thread;
   });
+}
+
+const ACTIVE_THREAD = new Set(["queued", "dispatched", "delivering"]);
+
+/** Keep sidebar `working` / `updatedAt` in sync without scanning all jobs on list. */
+export function syncWebThreadActivity(store: StoreData, job: Job) {
+  if (job.source === "slack") return;
+  const source = webThreadSource(job.source ?? "web");
+  const threadId = job.webThreadId ?? "main";
+  const key = webThreadStoreKey(job.ownerUserId, source, threadId);
+  const now = job.updatedAt || job.createdAt || new Date().toISOString();
+  let thread = store.webThreads[key];
+  if (!thread || thread.ownerUserId !== job.ownerUserId) {
+    thread = {
+      id: threadId,
+      ownerUserId: job.ownerUserId,
+      source,
+      title: titleFromPrompt(job.prompt),
+      createdAt: job.createdAt || now,
+      updatedAt: now,
+    };
+    store.webThreads[key] = thread;
+  }
+  const peers = (store.jobs ?? []).filter(
+    (j) =>
+      j.ownerUserId === job.ownerUserId &&
+      (j.source ?? "web") === (job.source ?? "web") &&
+      (j.webThreadId ?? "main") === threadId,
+  );
+  thread.working = peers.some((j) => ACTIVE_THREAD.has(j.status));
+  if (now.localeCompare(thread.updatedAt || "") >= 0) {
+    thread.updatedAt = now;
+    const title = titleFromPrompt(job.prompt);
+    if (title !== "New chat") thread.title = title;
+  }
 }
 
 export async function updateSlackThreadAgent(
@@ -113,8 +152,30 @@ export async function listWebThreadsForUser(
   limit = 40,
   storeSnapshot?: StoreData,
 ): Promise<{ id: string; title: string; updatedAt: string; working: boolean }[]> {
-  const store = storeSnapshot ?? await getStore();
   const merged = new Map<string, { id: string; title: string; updatedAt: string; working: boolean }>();
+
+  if (relationalStoreEnabled() && !storeSnapshot) {
+    try {
+      const rows = await listWebThreadRows(ownerUserId, source, limit);
+      for (const thread of rows) {
+        merged.set(thread.id, {
+          id: thread.id,
+          title: thread.title,
+          updatedAt: thread.updatedAt,
+          working: Boolean(thread.working),
+        });
+      }
+      if (merged.size || jobs.length === 0) {
+        return [...merged.values()]
+          .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))
+          .slice(0, limit);
+      }
+    } catch {
+      // fall through to blob
+    }
+  }
+
+  const store = storeSnapshot ?? await getStore();
 
   for (const thread of Object.values(store.webThreads)) {
     if (thread.ownerUserId !== ownerUserId || thread.source !== source) continue;
@@ -122,7 +183,7 @@ export async function listWebThreadsForUser(
       id: thread.id,
       title: thread.title,
       updatedAt: thread.updatedAt,
-      working: false,
+      working: Boolean(thread.working),
     });
   }
 

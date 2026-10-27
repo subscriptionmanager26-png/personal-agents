@@ -1,6 +1,11 @@
 import { randomId } from "@/lib/crypto";
 import { getStore, getStoreFresh, updateStore } from "@/lib/store";
-import { touchWebThread, webThreadSource } from "@/lib/web-threads";
+import {
+  syncWebThreadActivity,
+  touchWebThread,
+  webThreadSource,
+  webThreadStoreKey,
+} from "@/lib/web-threads";
 import type {
   JobAttachment,
   Job,
@@ -12,8 +17,27 @@ import type {
   StoreData,
 } from "@/lib/types";
 
-const MAX_JOBS = 1000;
+import { MAX_JOBS_PER_USER, getJobRow, relationalStoreEnabled, upsertJobRow } from "@/lib/store-relational";
+
+/** Global soft cap when assembling blob; per-user cap enforced via relational trim. */
+const MAX_JOBS = 2000;
 const MAX_STREAM_EVENTS = 200;
+
+function trimJobsPerUser(store: { jobs: Job[] }) {
+  const byOwner = new Map<string, Job[]>();
+  for (const job of store.jobs) {
+    const list = byOwner.get(job.ownerUserId) ?? [];
+    list.push(job);
+    byOwner.set(job.ownerUserId, list);
+  }
+  const kept: Job[] = [];
+  for (const list of byOwner.values()) {
+    list.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+    kept.push(...list.slice(0, MAX_JOBS_PER_USER));
+  }
+  kept.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+  store.jobs = kept.slice(0, MAX_JOBS);
+}
 
 function isStreamClosed(job: Job) {
   return (job.stream ?? []).some((e) => e.type === "done" || e.type === "error");
@@ -53,6 +77,7 @@ export async function appendStreamEvents(jobId: string, ownerUserId: string, eve
     if (!job) return undefined;
     const added = pushStream(job, events);
     job.updatedAt = new Date().toISOString();
+    void upsertJobRow(job).catch(() => undefined);
     return added;
   });
 }
@@ -97,7 +122,7 @@ export async function createJob(input: {
 
   const created = await updateStore((store) => {
     store.jobs.unshift(job);
-    store.jobs = store.jobs.slice(0, MAX_JOBS);
+    trimJobsPerUser(store);
 
     if (
       source === "slack" &&
@@ -127,6 +152,7 @@ export async function createJob(input: {
       };
     }
 
+    syncWebThreadActivity(store, job);
     return job;
   });
 
@@ -139,6 +165,7 @@ export async function createJob(input: {
     });
   }
 
+  if (created) await upsertJobRow(created).catch(() => undefined);
   return created;
 }
 
@@ -151,6 +178,14 @@ export function threadKey(
 }
 
 export async function getJob(id: string, opts?: { fresh?: boolean }) {
+  if (relationalStoreEnabled()) {
+    try {
+      const row = await getJobRow(id);
+      if (row) return row;
+    } catch {
+      // fall through to blob/assembled store
+    }
+  }
   const store = opts?.fresh ? await getStoreFresh() : await getStore();
   return store.jobs.find((j) => j.id === id);
 }
@@ -237,6 +272,12 @@ export async function patchJob(
         detail: event.detail,
       });
     }
+    syncWebThreadActivity(store, job);
+    void upsertJobRow(job).catch(() => undefined);
+    const source = webThreadSource(job.source ?? "web");
+    const threadKeyId = webThreadStoreKey(job.ownerUserId, source, job.webThreadId ?? "main");
+    const thread = store.webThreads[threadKeyId];
+    if (thread) void import("@/lib/store-relational").then((m) => m.upsertWebThreadRow(thread)).catch(() => undefined);
     return job;
   });
 }

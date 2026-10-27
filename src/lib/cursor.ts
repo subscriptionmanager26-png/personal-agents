@@ -10,16 +10,19 @@ import {
   getAgent,
   getAgentConversation,
   getRun,
+  listAgentRuns,
   recoverBusyAgentForNewRun,
   type McpServerDef,
 } from "@/lib/cursor-api";
 import { ensurePersonalRepo, syncWorkspaceSkills } from "@/lib/github";
-import { getJob, patchJob } from "@/lib/jobs";
+import { getJob, patchJob, sortedJobsForUser } from "@/lib/jobs";
 import { getKiteConnection, KITE_MCP_NAME } from "@/lib/kite";
 import { mockRunId } from "@/lib/mock-trace";
 import { buildPersonalAgentPrompt } from "@/lib/prompt";
+import { assignRunsToJobs, finalAssistantTextsByTurn } from "@/lib/run-binding";
 import { createMemoryToken } from "@/lib/run-token";
 import { runtimeFor, runtimeForUserId, type AgentRuntime } from "@/lib/runtime";
+import { getStoreFresh } from "@/lib/store";
 import { createVaultJobToken, listVaultLabels } from "@/lib/vault";
 import { agentBindingForJob, mockAgentIdForJob, saveAgentBindingForJob } from "@/lib/thread-agents";
 import { getUser } from "@/lib/users";
@@ -188,6 +191,13 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     const { reconcileActiveJobsInThread } = await import("@/lib/settle");
     await reconcileActiveJobsInThread(current.id, job.source ?? "web", job.webThreadId ?? "main");
 
+    // If this job already produced a Cursor run (patch lost / re-dispatch), bind it —
+    // never create a second run for the same user message ("ghost" conversation turn).
+    const existing = await ensureJobRunBinding(job, binding.agentId).catch(() => undefined);
+    if (existing?.cursorRunId) {
+      return { user: current, agentId: binding.agentId, mock: false };
+    }
+
     const run = await createRun(rt.cursorApiKey, binding.agentId, promptText, mcp.servers);
     let runId = extractRunId(run.body);
     let runStatus = run.status;
@@ -232,7 +242,9 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     promptText,
     mcp.servers,
   );
-  await saveAgentBindingForJob(job, created.agentId, hash);
+  // Persist the job↔run binding BEFORE the thread agent ref. If the process dies
+  // after Cursor creates the agent but before both writes, a later re-dispatch
+  // must be able to reclaim the existing run instead of creating a ghost turn.
   await patchJob(job.id, current.id, {
     status: "dispatched",
     cursorAgentId: created.agentId,
@@ -241,7 +253,50 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     cursorBody: created.body,
     event: { type: "dispatch", detail: `Created agent ${created.agentId}` },
   });
+  await saveAgentBindingForJob(job, created.agentId, hash);
   return { user: current, agentId: created.agentId, mock: false };
+}
+
+/**
+ * If this job has no cursorRunId but the thread agent already has an unclaimed
+ * run from the job's create window, bind that run and mark the job dispatched.
+ * Returns the updated job when a binding was applied.
+ */
+export async function ensureJobRunBinding(job: Job, agentId: string): Promise<Job | undefined> {
+  if (job.cursorRunId) {
+    if (!job.cursorAgentId) {
+      await patchJob(job.id, job.ownerUserId, { cursorAgentId: agentId });
+      return (await getJob(job.id, { fresh: true })) ?? job;
+    }
+    return undefined;
+  }
+  if (agentId.startsWith("mock-")) return undefined;
+
+  const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
+  if (!key) return undefined;
+
+  const store = await getStoreFresh();
+  const peers = sortedJobsForUser(store, job.ownerUserId).filter(
+    (j) =>
+      j.source === job.source &&
+      (j.webThreadId ?? "main") === (job.webThreadId ?? "main") &&
+      (j.cursorAgentId === agentId || !j.cursorAgentId || j.id === job.id),
+  );
+  const runs = await listAgentRuns(key, agentId);
+  const assignments = assignRunsToJobs(peers, runs);
+  const runId = assignments.get(job.id);
+  if (!runId) return undefined;
+
+  const runMeta = runs.find((r) => r.id === runId);
+  await patchJob(job.id, job.ownerUserId, {
+    status: job.status === "queued" || job.status === "error" ? "dispatched" : job.status,
+    cursorAgentId: agentId,
+    cursorRunId: runId,
+    cursorBody: runMeta ?? job.cursorBody,
+    error: job.status === "error" ? undefined : job.error,
+    event: { type: "dispatch", detail: `Bound existing Cursor run ${runId}` },
+  });
+  return (await getJob(job.id, { fresh: true })) ?? job;
 }
 
 /** `repoUser` set: the agent works in that user's repo. Unset: a no-repo agent. */
@@ -302,39 +357,37 @@ async function lastAssistantFromConversation(key: string, agentId: string) {
   return "";
 }
 
-function longestText(...parts: (string | undefined)[]) {
-  return parts
-    .map((p) => p?.trim() ?? "")
-    .filter(Boolean)
-    .sort((a, b) => b.length - a.length)[0];
-}
-
-/** Text for one specific run only (safe for older jobs in a multi-turn thread). */
-function assistantMessages(conversation: { messages?: { type?: string; role?: string; text?: string }[] }) {
-  return (conversation.messages ?? []).filter((m) => {
-    const role = (m.type || m.role || "").toLowerCase();
-    return role.includes("assistant") || role === "ai_message";
-  });
-}
-
-/** Map this job to the Nth assistant message on the thread agent (not always the latest). */
+/**
+ * Prefer the job's bound Cursor run. If missing, try to reclaim an unclaimed run
+ * from the job's create window, then read that run's result.
+ * Conversation "latest turn" is never used for older jobs.
+ */
 export async function fetchAssistantMessageForThreadJob(
   ownerUserId: string,
   agentId: string,
   job: Job,
-  threadJobs: Job[],
+  _threadJobs: Job[],
 ) {
-  const peers = threadJobs
+  let runId = job.cursorRunId;
+  if (!runId) {
+    const bound = await ensureJobRunBinding(job, agentId).catch(() => undefined);
+    runId = bound?.cursorRunId;
+  }
+  if (runId) {
+    const fromRun = await fetchAssistantTextForRun(ownerUserId, agentId, runId);
+    if (fromRun) return fromRun;
+  }
+
+  // Last resort for the newest job only: final assistant texts per user-turn (not every step).
+  const peers = _threadJobs
     .filter((j) => j.source === job.source && (j.webThreadId ?? "main") === (job.webThreadId ?? "main"))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const turn = peers.findIndex((j) => j.id === job.id);
-  if (turn < 0) return "";
+  if (peers[peers.length - 1]?.id !== job.id) return "";
+
   const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
   const conversation = await getAgentConversation(key, agentId);
-  const assistants = assistantMessages(conversation);
-  if (turn >= assistants.length) return "";
-  if (assistants.length < peers.length && turn < peers.length - 1) return "";
-  return assistants[turn]?.text?.trim() ?? "";
+  const finals = finalAssistantTextsByTurn(conversation.messages ?? []);
+  return finals[finals.length - 1] ?? "";
 }
 
 export async function fetchAssistantTextForRun(ownerUserId: string, agentId: string, runId: string) {

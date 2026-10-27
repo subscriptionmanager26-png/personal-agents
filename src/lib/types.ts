@@ -288,6 +288,8 @@ export type WebThread = {
   title: string;
   cursorAgentId?: string;
   cursorAgentSkillsHash?: string;
+  /** True while any job on this thread is queued/dispatched/delivering. */
+  working?: boolean;
   createdAt: string;
   updatedAt: string;
 };
