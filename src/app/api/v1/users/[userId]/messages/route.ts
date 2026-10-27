@@ -34,8 +34,10 @@ export async function POST(request: Request, { params }: Params) {
   if ("response" in auth) return auth.response;
   const body = await readJson(request);
   const text = typeof body?.text === "string" ? body.text : "";
-  const threadId = typeof body?.threadId === "string" && body.threadId ? body.threadId : "main";
-  if (!isValidThreadId(threadId)) return apiError(400, "invalid_thread_id", "threadId: 1-64 of letters, digits, . _ : -");
+  const threadId = typeof body?.threadId === "string" ? body.threadId.trim() : "";
+  if (!threadId || !isValidThreadId(threadId)) {
+    return apiError(400, "invalid_thread_id", "threadId required: 1-64 of letters, digits, . _ : -");
+  }
 
   try {
     const { job } = await enqueueChat({ user: auth.user, text, threadId, source: "api", attachments: body?.attachments });

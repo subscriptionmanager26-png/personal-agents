@@ -1,4 +1,3 @@
-import { getStoreFresh } from "@/lib/store";
 import { listWebThreadsForUser } from "@/lib/web-threads";
 
 export type ApiChatThread = {
@@ -10,10 +9,11 @@ export type ApiChatThread = {
 
 /**
  * Pocketedge www (`source: api`) conversations — metadata only.
- * Does not scan/reconcile jobs (that would pull the whole blob and call Cursor).
- * Working flags come from webThreads.working when set; otherwise false until settle touches the thread.
+ * Prefers relational `pa:t:*` / `pa_web_threads` rows (no full blob read).
+ * Falls back to blob inside listWebThreadsForUser when relational is off/empty.
+ * Drops legacy empty `main` placeholders that were created before draft-until-send.
  */
 export async function listApiChatThreads(ownerUserId: string, limit = 40): Promise<ApiChatThread[]> {
-  const store = await getStoreFresh();
-  return listWebThreadsForUser(ownerUserId, "api", [], limit, store);
+  const threads = await listWebThreadsForUser(ownerUserId, "api", [], limit);
+  return threads.filter((t) => t.id !== "main");
 }
