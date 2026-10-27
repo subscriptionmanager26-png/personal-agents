@@ -1,4 +1,9 @@
-import { readThreadIndex, rebuildThreadIndex, relationalStoreEnabled } from "@/lib/store-relational";
+import {
+  isSidebarThread,
+  readThreadIndex,
+  rebuildThreadIndex,
+  relationalStoreEnabled,
+} from "@/lib/store-relational";
 import { listWebThreadsForUser } from "@/lib/web-threads";
 
 export type ApiChatThread = {
@@ -25,5 +30,5 @@ export async function listApiChatThreads(ownerUserId: string, limit = 40): Promi
   }
 
   const threads = await listWebThreadsForUser(ownerUserId, "api", [], limit);
-  return threads.filter((t) => t.id !== "main");
+  return threads.filter(isSidebarThread);
 }

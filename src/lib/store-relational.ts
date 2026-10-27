@@ -105,6 +105,18 @@ function threadToIndexEntry(thread: WebThread): ThreadIndexEntry {
   };
 }
 
+/**
+ * Legacy default thread id is `main`. Keep it in the sidebar when it has a real
+ * title (older chats); hide empty placeholders only.
+ */
+export function isSidebarThread(thread: { id: string; title?: string | null }) {
+  if (thread.id !== "main") return true;
+  const title = (thread.title || "").trim();
+  if (!title) return false;
+  const lower = title.toLowerCase();
+  return lower !== "main" && lower !== "new chat";
+}
+
 function sortIndexEntries(entries: ThreadIndexEntry[]) {
   return [...entries].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
@@ -144,7 +156,6 @@ export async function upsertWebThreadRow(thread: WebThread): Promise<void> {
 /** Merge one thread into the per-user sidebar index (primary-key row). */
 export async function upsertThreadIndexEntry(thread: WebThread): Promise<void> {
   if (!dualWriteRelationalEnabled()) return;
-  if (thread.id === "main") return;
   const supabase = getSupabaseAdmin();
   const indexId = threadIndexRowId(thread.ownerUserId, thread.source);
   const { data: existing, error: readErr } = await supabase
@@ -155,8 +166,12 @@ export async function upsertThreadIndexEntry(thread: WebThread): Promise<void> {
   if (readErr) throw readErr;
 
   const prev = (existing?.data as StoredThreadIndex | undefined)?.threads ?? [];
-  const nextMap = new Map(prev.filter((t) => t.id !== "main").map((t) => [t.id, t]));
-  nextMap.set(thread.id, threadToIndexEntry(thread));
+  const nextMap = new Map(prev.filter(isSidebarThread).map((t) => [t.id, t]));
+  if (isSidebarThread(thread)) {
+    nextMap.set(thread.id, threadToIndexEntry(thread));
+  } else {
+    nextMap.delete(thread.id);
+  }
   const threads = sortIndexEntries([...nextMap.values()]).slice(0, THREAD_INDEX_LIMIT);
   const payload: StoredThreadIndex = {
     kind: "thread_index",
@@ -185,7 +200,7 @@ export async function readThreadIndex(
   if (!data?.data) return null;
   const stored = data.data as StoredThreadIndex;
   if (stored.kind !== "thread_index" || !Array.isArray(stored.threads)) return null;
-  return sortIndexEntries(stored.threads.filter((t) => t.id !== "main")).slice(0, limit);
+  return sortIndexEntries(stored.threads.filter(isSidebarThread)).slice(0, limit);
 }
 
 /** Scan pa:t:* once, write index, return entries. */
@@ -196,7 +211,7 @@ export async function rebuildThreadIndex(
 ): Promise<ThreadIndexEntry[]> {
   const rows = await listWebThreadRows(ownerUserId, source, Math.max(limit, THREAD_INDEX_LIMIT));
   const threads = sortIndexEntries(
-    rows.filter((t) => t.id !== "main").map(threadToIndexEntry),
+    rows.filter(isSidebarThread).map(threadToIndexEntry),
   ).slice(0, limit);
   if (dualWriteRelationalEnabled()) {
     const payload: StoredThreadIndex = {
@@ -348,7 +363,7 @@ export async function writeRelationalStore(store: StoreData): Promise<void> {
   // Rebuild sidebar indexes per owner+source (O(1) list path).
   const indexGroups = new Map<string, WebThread[]>();
   for (const thread of Object.values(store.webThreads ?? {})) {
-    if (thread.id === "main") continue;
+    if (!isSidebarThread(thread)) continue;
     const key = `${thread.ownerUserId}\0${thread.source}`;
     const list = indexGroups.get(key) ?? [];
     list.push(thread);
