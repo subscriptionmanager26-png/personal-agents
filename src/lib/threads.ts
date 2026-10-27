@@ -1,7 +1,7 @@
 import { messageView } from "@/lib/agent-api";
 import { clientText } from "@/lib/client-text";
 import { listJobsForUser } from "@/lib/jobs";
-import { ensureFullReply, reconcileJob } from "@/lib/settle";
+import { ensureFullReply, reconcileErroredJob, reconcileJob } from "@/lib/settle";
 import { listWebThreadsForUser } from "@/lib/web-threads";
 import type { ActionRequired, Job, JobAttachment, UiBlock } from "@/lib/types";
 
@@ -38,11 +38,19 @@ export async function listChatThreads(ownerUserId: string, limit = 40): Promise<
 export async function listThreadJobs(ownerUserId: string, threadId: string) {
   const jobs = webJobs(await listJobsForUser(ownerUserId, 400)).filter((j) => (j.webThreadId ?? "main") === threadId);
   const slice = jobs.slice(0, 60).reverse();
-  return Promise.all(
+  const rows = await Promise.all(
     slice.map(async (job) => {
       if (ACTIVE.has(job.status)) return reconcileJob(job);
       if (job.status === "replied") return ensureFullReply(job);
       return job;
+    }),
+  );
+  return Promise.all(
+    rows.map(async (job) => {
+      let row = job;
+      if (row.status === "error") row = await reconcileErroredJob(row, rows);
+      if (row.status === "replied") row = await ensureFullReply(row);
+      return row;
     }),
   );
 }

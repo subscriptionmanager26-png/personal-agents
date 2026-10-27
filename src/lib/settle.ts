@@ -304,6 +304,79 @@ async function isLatestJobOnAgent(job: Job) {
   return newest?.id === job.id;
 }
 
+function hasStreamBlocks(job: Job) {
+  return (job.stream ?? []).some((e) => e.type === "block");
+}
+
+function isRecoverableThreadError(error?: string) {
+  if (!error) return false;
+  return (
+    /still working on the previous message/i.test(error) ||
+    /interrupted before it finished/i.test(error) ||
+    /stopped so you could send/i.test(error)
+  );
+}
+
+function isResendFollowUp(prompt: string) {
+  return /resend|send again|repeat (?:the |my )?(?:previous|last) message|previous message/i.test(prompt);
+}
+
+async function tryReviveFromCursorRun(job: Job): Promise<Job> {
+  if (!job.cursorAgentId || !job.cursorRunId) return job;
+  const { getRun, TERMINAL_RUN_STATUSES } = await import("@/lib/cursor-api");
+  const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
+  if (!key) return job;
+  try {
+    const run = await getRun(key, job.cursorAgentId, job.cursorRunId);
+    const st = (run.status || "").toUpperCase();
+    if (!TERMINAL_RUN_STATUSES.includes(st)) return job;
+    let message = run.result?.trim() || "";
+    if (!message || message.length < 80) {
+      message = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    }
+    if (!message || message.startsWith("Agent status:") || message.length < 40) return job;
+    await patchJob(job.id, job.ownerUserId, {
+      status: "replied",
+      reply: { message, receivedAt: new Date().toISOString() },
+      event: { type: "replied", detail: "Recovered from Cursor run after stale error" },
+    });
+    return (await getJob(job.id, { fresh: true })) ?? job;
+  } catch {
+    return job;
+  }
+}
+
+/** Jobs marked error after the agent already streamed UI, or after a later “resend” succeeded. */
+export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promise<Job> {
+  if (job.status !== "error") return job;
+  if (!isRecoverableThreadError(job.error) && !hasStreamBlocks(job)) return job;
+  if (job.reply?.message?.trim()) {
+    await patchJob(job.id, job.ownerUserId, { status: "replied" });
+    return (await getJob(job.id, { fresh: true })) ?? job;
+  }
+
+  let row = await tryReviveFromCursorRun(job);
+  if (row.status === "replied") return ensureFullReply(row);
+
+  const peers = threadPeers ?? [];
+  const donor = peers
+    .filter((j) => j.id !== job.id && j.status === "replied" && Date.parse(j.createdAt) > Date.parse(job.createdAt))
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    .find((j) => isResendFollowUp(j.prompt));
+  const donorText = donor?.reply?.message?.trim();
+  if (!donor || !donorText || donorText.length < 200) return job;
+
+  await patchJob(job.id, job.ownerUserId, {
+    status: "replied",
+    reply: {
+      message: donorText,
+      receivedAt: donor.reply?.receivedAt ?? new Date().toISOString(),
+    },
+    event: { type: "replied", detail: "Recovered from follow-up resend in thread" },
+  });
+  return ensureFullReply((await getJob(job.id, { fresh: true })) ?? job);
+}
+
 export async function ensureFullReply(job: Job): Promise<Job> {
   if (job.status !== "replied" || !job.cursorAgentId) return job;
   const stored = job.reply?.message?.trim() ?? "";
@@ -359,8 +432,12 @@ export async function releaseThreadForNewMessage(
 
   active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
   for (const job of active) {
-    const fresh = (await getJob(job.id, { fresh: true })) ?? job;
+    let fresh = (await getJob(job.id, { fresh: true })) ?? job;
     if (fresh.status === "replied" && fresh.reply?.message?.trim()) continue;
+    if (hasStreamBlocks(fresh)) {
+      fresh = await tryReviveFromCursorRun(fresh);
+      if (fresh.status === "replied" && fresh.reply?.message?.trim()) continue;
+    }
     await patchJob(job.id, job.ownerUserId, {
       status: "error",
       error: "This message was interrupted before it finished. Ask again if you need the rest.",

@@ -113,19 +113,22 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
   const scanCap = opts.threadId ? 400 : 250;
   const out: MessageView[] = [];
   let examined = 0;
-  const { reconcileJob } = await import("@/lib/settle");
+  const { reconcileJob, reconcileErroredJob, ensureFullReply } = await import("@/lib/settle");
+  const rows: Job[] = [];
   for (const job of sortedJobsForUser(store, ownerUserId)) {
     examined += 1;
     if (examined > scanCap) break;
     if (job.source !== opts.source) continue;
     if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
     let row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
-    if (row.status === "replied") {
-      const { ensureFullReply } = await import("@/lib/settle");
-      row = await ensureFullReply(row);
-    }
-    out.push(safeMessageView(row));
-    if (out.length >= limit) break;
+    if (row.status === "replied") row = await ensureFullReply(row);
+    rows.push(row);
+    if (rows.length >= limit) break;
+  }
+  for (let i = 0; i < rows.length; i += 1) {
+    if (rows[i].status === "error") rows[i] = await reconcileErroredJob(rows[i], rows);
+    if (rows[i].status === "replied") rows[i] = await ensureFullReply(rows[i]);
+    out.push(safeMessageView(rows[i]));
   }
   return out;
 }
@@ -133,8 +136,14 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
 export async function getOwnedMessage(ownerUserId: string, messageId: string) {
   const job = await getJob(messageId, { fresh: true });
   if (!job || job.ownerUserId !== ownerUserId) return undefined;
-  const { reconcileJob, ensureFullReply } = await import("@/lib/settle");
+  const { reconcileJob, reconcileErroredJob, ensureFullReply } = await import("@/lib/settle");
   let row = await reconcileJob(job);
+  if (row.status === "error") {
+    const peers = sortedJobsForUser(await getStore(), ownerUserId).filter(
+      (j) => j.source === row.source && (j.webThreadId ?? "main") === (row.webThreadId ?? "main"),
+    );
+    row = await reconcileErroredJob(row, peers);
+  }
   if (row.status === "replied") row = await ensureFullReply(row);
   return row;
 }
