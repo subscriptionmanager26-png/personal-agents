@@ -1,5 +1,6 @@
 import { sortedJobsForUser } from "@/lib/jobs";
-import { getStore } from "@/lib/store";
+import { getStoreFresh } from "@/lib/store";
+import { reconcileJob } from "@/lib/settle";
 import type { Job } from "@/lib/types";
 import { listWebThreadsForUser } from "@/lib/web-threads";
 
@@ -49,9 +50,13 @@ function threadTitle(prompt: string | undefined) {
 
 /** Pocketedge www (`source: api`) conversations. */
 export async function listApiChatThreads(ownerUserId: string, limit = 40): Promise<ApiChatThread[]> {
-  const store = await getStore();
-  const jobs = sortedJobsForUser(store, ownerUserId)
+  const store = await getStoreFresh();
+  const raw = sortedJobsForUser(store, ownerUserId)
     .filter((j) => j.source === "api")
     .slice(0, 600);
+  const jobs: Job[] = [];
+  for (const job of raw) {
+    jobs.push(ACTIVE.has(job.status) ? await reconcileJob(job) : job);
+  }
   return listWebThreadsForUser(ownerUserId, "api", jobs, limit, store);
 }

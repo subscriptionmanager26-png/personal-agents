@@ -72,8 +72,6 @@ const ACTIVE_MESSAGE = new Set(["queued", "dispatched", "delivering"]);
 
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-  const { pollDispatchedJobs } = await import("@/lib/settle");
-  await pollDispatchedJobs().catch(() => undefined);
   const store = await getStore();
   const scanCap = opts.threadId ? 400 : 250;
   const out: MessageView[] = [];

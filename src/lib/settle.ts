@@ -287,6 +287,38 @@ export async function reconcileActiveJobsInThread(
   return stillActive;
 }
 
+/** Clear stale in-flight jobs so a new user message can start (cancel Cursor runs if needed). */
+export async function releaseThreadForNewMessage(
+  ownerUserId: string,
+  source: JobSource,
+  threadId: string,
+): Promise<void> {
+  let active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
+  if (!active.length) return;
+
+  for (const job of active) {
+    if (job.cursorAgentId && job.cursorRunId) {
+      try {
+        const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
+        const { cancelRun } = await import("@/lib/cursor-api");
+        await cancelRun(key, job.cursorAgentId, job.cursorRunId).catch(() => undefined);
+      } catch {
+        // continue
+      }
+    }
+    await settleIfFinished(job).catch(() => undefined);
+  }
+
+  active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
+  for (const job of active) {
+    await patchJob(job.id, job.ownerUserId, {
+      status: "error",
+      error: "This message was stopped so you could send a new one.",
+      event: { type: "error", detail: "Superseded by a new message" },
+    });
+  }
+}
+
 export async function pollDispatchedJobs() {
   const jobs = await listDispatchedJobs();
   for (const job of jobs) {

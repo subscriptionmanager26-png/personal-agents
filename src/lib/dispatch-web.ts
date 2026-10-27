@@ -2,7 +2,7 @@ import { after } from "next/server";
 
 import { dispatchJob } from "@/lib/cursor";
 import { createJob, patchJob } from "@/lib/jobs";
-import { reconcileActiveJobsInThread } from "@/lib/settle";
+import { releaseThreadForNewMessage } from "@/lib/settle";
 import { resolveAttachments } from "@/lib/files";
 import { ensurePersonalRepo } from "@/lib/github";
 import type { JobSource, PersonalUser } from "@/lib/types";
@@ -44,10 +44,7 @@ export async function enqueueChat(input: {
     );
   }
   const threadId = input.threadId || "main";
-  const stillActive = await reconcileActiveJobsInThread(input.user.id, input.source, threadId);
-  if (stillActive.length) {
-    throw new ChatRejected("Your agent is still working on the previous message in this chat.", "busy");
-  }
+  await releaseThreadForNewMessage(input.user.id, input.source, threadId);
 
   let user = input.user;
   if (input.source === "web") {
