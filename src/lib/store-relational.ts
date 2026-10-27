@@ -2,13 +2,43 @@ import { coerceStoreData, emptyStoreData } from "@/lib/store-coerce";
 import { getSupabaseAdmin, supabaseStoreConfigured } from "@/lib/supabase-admin";
 import type { Job, JobSource, PersonalUser, StoreData, WebThread } from "@/lib/types";
 
+/**
+ * Phase 2 storage without new DDL: shard into `personal_agents_store` rows.
+ * (pa_* SQL migrations remain for a later dedicated-schema cutover.)
+ *
+ * Row ids:
+ *   pa:g:main
+ *   pa:u:{ownerUserId}
+ *   pa:t:{owner}:{source}:{threadId}
+ *   pa:j:{jobId}
+ */
+const TABLE = "personal_agents_store";
+
 function threadStoreKey(ownerUserId: string, source: "web" | "api", threadId: string) {
   return `${ownerUserId}:${source}:${threadId}`;
 }
 
+/** Owner ids look like `api:ws_…:uuid` — encode segments so `:` can't break keys. */
+function enc(part: string) {
+  return encodeURIComponent(part);
+}
+
+function globalRowId() {
+  return "pa:g:main";
+}
+function userRowId(ownerUserId: string) {
+  return `pa:u:${enc(ownerUserId)}`;
+}
+function threadRowId(ownerUserId: string, source: string, threadId: string) {
+  return `pa:t:${enc(ownerUserId)}:${enc(source)}:${enc(threadId)}`;
+}
+function jobRowId(jobId: string) {
+  return `pa:j:${enc(jobId)}`;
+}
+
 /**
- * When true, hot reads prefer pa_* tables over the single jsonb blob.
- * Dual-write still runs whenever Supabase is configured (see dualWriteRelationalEnabled).
+ * When true, hot reads prefer sharded pa:* rows over the monolithic `main` blob.
+ * Dual-write runs whenever Supabase is configured.
  * Opt in after migrating: PERSONAL_AGENTS_RELATIONAL=1
  */
 export function relationalStoreEnabled() {
@@ -26,100 +56,80 @@ export const MAX_JOBS_PER_USER = Math.min(
   500,
 );
 
-type JobRow = {
-  id: string;
-  owner_user_id: string;
-  source: string;
-  web_thread_id: string | null;
-  status: string;
-  prompt: string;
-  data: Record<string, unknown>;
-  created_at: string;
-  updated_at: string;
+type StoredJob = { kind: "job"; job: Job };
+type StoredThread = { kind: "thread"; thread: WebThread };
+type StoredUser = {
+  kind: "user";
+  ownerUserId: string;
+  userProfile: PersonalUser | null;
+  files: StoreData["files"][string];
+  memories: StoreData["memories"][string];
+  vaultItems: StoreData["vaultItems"][string];
+  connections: StoreData["connections"][string];
+  orders: StoreData["orders"][string];
+  slackThreads: StoreData["slackThreads"];
+};
+type StoredGlobal = {
+  kind: "global";
+  workspaces: StoreData["workspaces"];
+  slackInstalls: StoreData["slackInstalls"];
+  processedSlackMessages: string[];
+  auditEvents: StoreData["auditEvents"];
 };
 
-function jobToRow(job: Job): JobRow {
-  const {
+async function upsertRow(id: string, data: unknown, updatedAt?: string) {
+  const supabase = getSupabaseAdmin();
+  const { error } = await supabase.from(TABLE).upsert({
     id,
-    ownerUserId,
-    source,
-    webThreadId,
-    status,
-    prompt,
-    createdAt,
-    updatedAt,
-    ...rest
-  } = job;
-  return {
-    id,
-    owner_user_id: ownerUserId,
-    source: source ?? "web",
-    web_thread_id: webThreadId ?? null,
-    status,
-    prompt: prompt ?? "",
-    data: rest as unknown as Record<string, unknown>,
-    created_at: createdAt,
-    updated_at: updatedAt,
-  };
-}
-
-function rowToJob(row: JobRow): Job {
-  const data = (row.data && typeof row.data === "object" ? row.data : {}) as Omit<
-    Job,
-    "id" | "ownerUserId" | "source" | "webThreadId" | "status" | "prompt" | "createdAt" | "updatedAt"
-  >;
-  return {
-    ...data,
-    id: row.id,
-    ownerUserId: row.owner_user_id,
-    source: row.source as JobSource,
-    webThreadId: row.web_thread_id ?? undefined,
-    status: row.status as Job["status"],
-    prompt: row.prompt,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+    data,
+    updated_at: updatedAt ?? new Date().toISOString(),
+  });
+  return error;
 }
 
 export async function upsertJobRow(job: Job): Promise<void> {
   if (!dualWriteRelationalEnabled()) return;
-  const supabase = getSupabaseAdmin();
-  const { error } = await supabase.from("pa_jobs").upsert(jobToRow(job), { onConflict: "id" });
+  const payload: StoredJob = { kind: "job", job };
+  const error = await upsertRow(jobRowId(job.id), payload, job.updatedAt);
   if (error) console.error("[store-relational] upsert job", job.id, error.message);
   await trimUserJobs(job.ownerUserId).catch(() => undefined);
 }
 
 export async function upsertWebThreadRow(thread: WebThread): Promise<void> {
   if (!dualWriteRelationalEnabled()) return;
-  const supabase = getSupabaseAdmin();
-  const { error } = await supabase.from("pa_web_threads").upsert(
-    {
-      owner_user_id: thread.ownerUserId,
-      source: thread.source,
-      thread_id: thread.id,
-      title: thread.title,
-      cursor_agent_id: thread.cursorAgentId ?? null,
-      cursor_agent_skills_hash: thread.cursorAgentSkillsHash ?? null,
-      working: Boolean(thread.working),
-      created_at: thread.createdAt,
-      updated_at: thread.updatedAt,
-    },
-    { onConflict: "owner_user_id,source,thread_id" },
+  const payload: StoredThread = { kind: "thread", thread };
+  const error = await upsertRow(
+    threadRowId(thread.ownerUserId, thread.source, thread.id),
+    payload,
+    thread.updatedAt,
   );
   if (error) console.error("[store-relational] upsert thread", thread.id, error.message);
 }
 
-async function trimUserJobs(ownerUserId: string) {
+async function listRowsByPrefix(prefix: string): Promise<Array<{ id: string; data: unknown; updated_at: string }>> {
   const supabase = getSupabaseAdmin();
   const { data, error } = await supabase
-    .from("pa_jobs")
-    .select("id")
-    .eq("owner_user_id", ownerUserId)
-    .order("created_at", { ascending: false })
-    .range(MAX_JOBS_PER_USER, MAX_JOBS_PER_USER + 200);
-  if (error || !data?.length) return;
-  const ids = data.map((r) => r.id as string);
-  await supabase.from("pa_jobs").delete().in("id", ids);
+    .from(TABLE)
+    .select("id,data,updated_at")
+    .like("id", `${prefix}%`)
+    .limit(5000);
+  if (error) throw error;
+  return (data as Array<{ id: string; data: unknown; updated_at: string }> | null) ?? [];
+}
+
+async function trimUserJobs(ownerUserId: string) {
+  const rows = await listRowsByPrefix("pa:j:");
+  const jobs = rows
+    .map((r) => (r.data as StoredJob | null)?.job)
+    .filter((j): j is Job => Boolean(j && j.ownerUserId === ownerUserId))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  const drop = jobs.slice(MAX_JOBS_PER_USER);
+  if (!drop.length) return;
+  const supabase = getSupabaseAdmin();
+  await supabase.from(TABLE).delete().in(
+    "id",
+    drop.map((j) => jobRowId(j.id)),
+  );
 }
 
 export async function listJobRowsForThread(
@@ -128,36 +138,36 @@ export async function listJobRowsForThread(
   threadId: string,
   limit: number,
 ): Promise<Job[]> {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("pa_jobs")
-    .select("*")
-    .eq("owner_user_id", ownerUserId)
-    .eq("source", source)
-    .eq("web_thread_id", threadId)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return (data as JobRow[] | null)?.map(rowToJob) ?? [];
+  const rows = await listRowsByPrefix("pa:j:");
+  return rows
+    .map((r) => (r.data as StoredJob | null)?.job)
+    .filter(
+      (j): j is Job =>
+        Boolean(j && j.ownerUserId === ownerUserId && (j.source ?? "web") === source && j.webThreadId === threadId),
+    )
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+    .slice(0, limit);
 }
 
 export async function listJobRowsForUser(ownerUserId: string, limit: number): Promise<Job[]> {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("pa_jobs")
-    .select("*")
-    .eq("owner_user_id", ownerUserId)
-    .order("updated_at", { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return (data as JobRow[] | null)?.map(rowToJob) ?? [];
+  const rows = await listRowsByPrefix("pa:j:");
+  return rows
+    .map((r) => (r.data as StoredJob | null)?.job)
+    .filter((j): j is Job => Boolean(j && j.ownerUserId === ownerUserId))
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+    .slice(0, limit);
 }
 
 export async function getJobRow(id: string): Promise<Job | undefined> {
   const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase.from("pa_jobs").select("*").eq("id", id).maybeSingle();
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", jobRowId(id))
+    .maybeSingle();
   if (error) throw error;
-  return data ? rowToJob(data as JobRow) : undefined;
+  const job = (data?.data as StoredJob | undefined)?.job;
+  return job;
 }
 
 export async function listWebThreadRows(
@@ -165,41 +175,28 @@ export async function listWebThreadRows(
   source: "web" | "api",
   limit: number,
 ): Promise<WebThread[]> {
-  const supabase = getSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("pa_web_threads")
-    .select("*")
-    .eq("owner_user_id", ownerUserId)
-    .eq("source", source)
-    .order("updated_at", { ascending: false })
-    .limit(limit);
-  if (error) throw error;
-  return (data ?? []).map((row) => ({
-    id: row.thread_id as string,
-    ownerUserId: row.owner_user_id as string,
-    source: row.source as "web" | "api",
-    title: (row.title as string) || "New chat",
-    cursorAgentId: (row.cursor_agent_id as string) || undefined,
-    cursorAgentSkillsHash: (row.cursor_agent_skills_hash as string) || undefined,
-    working: Boolean(row.working),
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-  }));
+  const rows = await listRowsByPrefix(`pa:t:${enc(ownerUserId)}:${enc(source)}:`);
+  return rows
+    .map((r) => (r.data as StoredThread | null)?.thread)
+    .filter((t): t is WebThread => Boolean(t))
+    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+    .slice(0, limit);
 }
 
-/** Persist whole in-memory store into relational tables (migration / dual-write). */
+/** Persist whole in-memory store into sharded rows (migration / dual-write). */
 export async function writeRelationalStore(store: StoreData): Promise<void> {
   if (!dualWriteRelationalEnabled()) return;
-  const supabase = getSupabaseAdmin();
+  const now = new Date().toISOString();
 
-  await supabase.from("pa_global").upsert({
-    id: "main",
+  const globalPayload: StoredGlobal = {
+    kind: "global",
     workspaces: store.workspaces ?? {},
-    slack_installs: store.slackInstalls ?? {},
-    processed_slack_messages: store.processedSlackMessages ?? [],
-    audit_events: store.auditEvents ?? [],
-    updated_at: new Date().toISOString(),
-  });
+    slackInstalls: store.slackInstalls ?? {},
+    processedSlackMessages: store.processedSlackMessages ?? [],
+    auditEvents: store.auditEvents ?? [],
+  };
+  const gErr = await upsertRow(globalRowId(), globalPayload, now);
+  if (gErr) throw gErr;
 
   const ownerIds = new Set<string>([
     ...Object.keys(store.users ?? {}),
@@ -208,104 +205,93 @@ export async function writeRelationalStore(store: StoreData): Promise<void> {
     ...Object.keys(store.vaultItems ?? {}),
     ...Object.keys(store.connections ?? {}),
     ...Object.keys(store.orders ?? {}),
-    ...Object.keys(store.slackThreads ?? {}).map((k) => k.split(":")[0]!).filter(Boolean),
+    ...Object.values(store.slackThreads ?? {}).map((ref) => ref.ownerUserId).filter(Boolean),
     ...(store.jobs ?? []).map((j) => j.ownerUserId),
+    ...Object.values(store.webThreads ?? {}).map((t) => t.ownerUserId),
   ]);
 
   for (const ownerUserId of ownerIds) {
-    const slackForUser: Record<string, unknown> = {};
+    const slackForUser: StoreData["slackThreads"] = {};
     for (const [key, ref] of Object.entries(store.slackThreads ?? {})) {
       if (ref.ownerUserId === ownerUserId) slackForUser[key] = ref;
     }
-    await supabase.from("pa_user_state").upsert({
-      owner_user_id: ownerUserId,
-      user_profile: store.users[ownerUserId] ?? null,
+    const payload: StoredUser = {
+      kind: "user",
+      ownerUserId,
+      userProfile: store.users[ownerUserId] ?? null,
       files: store.files[ownerUserId] ?? [],
       memories: store.memories[ownerUserId] ?? [],
-      vault_items: store.vaultItems[ownerUserId] ?? [],
+      vaultItems: store.vaultItems[ownerUserId] ?? [],
       connections: store.connections[ownerUserId] ?? [],
       orders: store.orders[ownerUserId] ?? [],
-      slack_threads: slackForUser,
-      updated_at: new Date().toISOString(),
-    });
+      slackThreads: slackForUser,
+    };
+    const error = await upsertRow(userRowId(ownerUserId), payload, now);
+    if (error) throw error;
   }
 
-  const threads = Object.values(store.webThreads ?? {});
-  if (threads.length) {
-    const chunk = 100;
-    for (let i = 0; i < threads.length; i += chunk) {
-      const slice = threads.slice(i, i + chunk).map((t) => ({
-        owner_user_id: t.ownerUserId,
-        source: t.source,
-        thread_id: t.id,
-        title: t.title,
-        cursor_agent_id: t.cursorAgentId ?? null,
-        cursor_agent_skills_hash: t.cursorAgentSkillsHash ?? null,
-        working: Boolean(t.working),
-        created_at: t.createdAt,
-        updated_at: t.updatedAt,
-      }));
-      await supabase.from("pa_web_threads").upsert(slice, { onConflict: "owner_user_id,source,thread_id" });
-    }
+  for (const thread of Object.values(store.webThreads ?? {})) {
+    const payload: StoredThread = { kind: "thread", thread };
+    const error = await upsertRow(
+      threadRowId(thread.ownerUserId, thread.source, thread.id),
+      payload,
+      thread.updatedAt || now,
+    );
+    if (error) throw error;
   }
 
-  const jobs = store.jobs ?? [];
-  if (jobs.length) {
-    const chunk = 50;
-    for (let i = 0; i < jobs.length; i += chunk) {
-      const slice = jobs.slice(i, i + chunk).map(jobToRow);
-      await supabase.from("pa_jobs").upsert(slice, { onConflict: "id" });
-    }
+  for (const job of store.jobs ?? []) {
+    const payload: StoredJob = { kind: "job", job };
+    const error = await upsertRow(jobRowId(job.id), payload, job.updatedAt || now);
+    if (error) throw error;
   }
 }
 
-/** Assemble StoreData from relational tables (relational-primary mode). */
+/** Assemble StoreData from sharded pa:* rows (relational-primary mode). */
 export async function readRelationalStore(): Promise<StoreData> {
-  const supabase = getSupabaseAdmin();
   const store = emptyStoreData();
 
-  const { data: globalRow } = await supabase.from("pa_global").select("*").eq("id", "main").maybeSingle();
-  if (globalRow) {
-    store.workspaces = (globalRow.workspaces as StoreData["workspaces"]) ?? {};
-    store.slackInstalls = (globalRow.slack_installs as StoreData["slackInstalls"]) ?? {};
-    store.processedSlackMessages = (globalRow.processed_slack_messages as string[]) ?? [];
-    store.auditEvents = (globalRow.audit_events as StoreData["auditEvents"]) ?? [];
+  const supabase = getSupabaseAdmin();
+  const { data: globalRow, error: gErr } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", globalRowId())
+    .maybeSingle();
+  if (gErr) throw gErr;
+  const global = globalRow?.data as StoredGlobal | undefined;
+  if (global?.kind === "global") {
+    store.workspaces = global.workspaces ?? {};
+    store.slackInstalls = global.slackInstalls ?? {};
+    store.processedSlackMessages = global.processedSlackMessages ?? [];
+    store.auditEvents = global.auditEvents ?? [];
   }
 
-  const { data: users } = await supabase.from("pa_user_state").select("*");
-  for (const row of users ?? []) {
-    const owner = row.owner_user_id as string;
-    if (row.user_profile) store.users[owner] = row.user_profile as PersonalUser;
-    store.files[owner] = (row.files as StoreData["files"][string]) ?? [];
-    store.memories[owner] = (row.memories as StoreData["memories"][string]) ?? [];
-    store.vaultItems[owner] = (row.vault_items as StoreData["vaultItems"][string]) ?? [];
-    store.connections[owner] = (row.connections as StoreData["connections"][string]) ?? [];
-    store.orders[owner] = (row.orders as StoreData["orders"][string]) ?? [];
-    Object.assign(store.slackThreads, (row.slack_threads as StoreData["slackThreads"]) ?? {});
+  const users = await listRowsByPrefix("pa:u:");
+  for (const row of users) {
+    const u = row.data as StoredUser | null;
+    if (!u || u.kind !== "user") continue;
+    const owner = u.ownerUserId;
+    if (u.userProfile) store.users[owner] = u.userProfile;
+    store.files[owner] = u.files ?? [];
+    store.memories[owner] = u.memories ?? [];
+    store.vaultItems[owner] = u.vaultItems ?? [];
+    store.connections[owner] = u.connections ?? [];
+    store.orders[owner] = u.orders ?? [];
+    Object.assign(store.slackThreads, u.slackThreads ?? {});
   }
 
-  const { data: threads } = await supabase.from("pa_web_threads").select("*");
-  for (const row of threads ?? []) {
-    const thread: WebThread = {
-      id: row.thread_id as string,
-      ownerUserId: row.owner_user_id as string,
-      source: row.source as "web" | "api",
-      title: (row.title as string) || "New chat",
-      cursorAgentId: (row.cursor_agent_id as string) || undefined,
-      cursorAgentSkillsHash: (row.cursor_agent_skills_hash as string) || undefined,
-      working: Boolean(row.working),
-      createdAt: row.created_at as string,
-      updatedAt: row.updated_at as string,
-    };
-    store.webThreads[threadStoreKey(thread.ownerUserId, thread.source, thread.id)] = thread;
+  const threads = await listRowsByPrefix("pa:t:");
+  for (const row of threads) {
+    const t = (row.data as StoredThread | null)?.thread;
+    if (!t) continue;
+    store.webThreads[threadStoreKey(t.ownerUserId, t.source, t.id)] = t;
   }
 
-  const { data: jobs } = await supabase
-    .from("pa_jobs")
-    .select("*")
-    .order("created_at", { ascending: false })
-    .limit(5000);
-  store.jobs = (jobs as JobRow[] | null)?.map(rowToJob) ?? [];
+  const jobs = await listRowsByPrefix("pa:j:");
+  store.jobs = jobs
+    .map((r) => (r.data as StoredJob | null)?.job)
+    .filter((j): j is Job => Boolean(j))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
   return coerceStoreData(store);
 }
@@ -314,7 +300,7 @@ export async function relationalTablesReady(): Promise<boolean> {
   if (!supabaseStoreConfigured()) return false;
   try {
     const supabase = getSupabaseAdmin();
-    const { error } = await supabase.from("pa_jobs").select("id").limit(1);
+    const { error } = await supabase.from(TABLE).select("id").limit(1);
     return !error;
   } catch {
     return false;

@@ -1,10 +1,10 @@
 /**
- * One-shot: copy personal_agents_store blob → pa_* tables.
+ * One-shot: copy personal_agents_store `main` blob → sharded pa:* rows
+ * in the same table (no DDL required).
  *
  *   npx tsx --env-file=.env.local scripts/migrate-blob-to-relational.ts
  *
- * Requires Supabase service role env + pa_* tables from
- * scripts/supabase-relational-store-migration.sql
+ * Requires Supabase service role env (POCKETEDGE_SUPABASE_*).
  */
 import { coerceStoreData, emptyStoreData } from "../src/lib/store-coerce";
 import { getSupabaseAdmin, SUPABASE_STORE_ROW_ID } from "../src/lib/supabase-admin";
@@ -24,7 +24,7 @@ async function readBlobOnly() {
 
 async function main() {
   if (!(await relationalTablesReady())) {
-    console.error("pa_* tables missing. Run scripts/supabase-relational-store-migration.sql first.");
+    console.error("personal_agents_store missing or unreachable.");
     process.exit(1);
   }
   console.log("Reading legacy blob…");
