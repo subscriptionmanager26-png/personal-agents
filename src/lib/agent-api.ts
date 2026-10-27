@@ -36,11 +36,26 @@ function viewStatus(job: Job): MessageView["status"] {
 export function blocksForJob(job: Job): UiBlock[] {
   const fromStream = (job.stream ?? []).flatMap((e) => (e.type === "block" ? [clientBlock(e.block)] : []));
   const rich = fromStream.filter((b) => b.kind !== "markdown");
+  const streamMd = fromStream
+    .filter((b): b is { kind: "markdown"; text: string } => b.kind === "markdown")
+    .map((b) => b.text)
+    .join("\n\n");
   const replyText = job.reply?.message?.trim();
+  const stream = job.stream ?? [];
+  const terminal =
+    job.status === "replied" ||
+    job.status === "error" ||
+    stream.some((e) => e.type === "done" || e.type === "error");
 
-  if (job.status === "replied" && replyText) {
-    const md = clientText(replyText);
-    return rich.length ? [{ kind: "markdown", text: md }, ...rich] : [{ kind: "markdown", text: md }];
+  if (terminal && (replyText || streamMd)) {
+    const best =
+      replyText && replyText.length >= streamMd.length
+        ? clientText(replyText)
+        : streamMd || (replyText ? clientText(replyText) : "");
+    if (best) {
+      const md = { kind: "markdown" as const, text: best };
+      return rich.length ? [md, ...rich] : [md];
+    }
   }
 
   if (!fromStream.length && replyText) {

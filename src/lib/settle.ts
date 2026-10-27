@@ -298,22 +298,25 @@ export async function reconcileActiveJobsInThread(
 
 /** Clear stale in-flight jobs so a new user message can start (cancel Cursor runs if needed). */
 /** Backfill job.reply from Cursor when the stream only captured part of the answer. */
-function storedReplyMarkdownLength(job: Job) {
-  const fromStream = (job.stream ?? []).flatMap((e) =>
-    e.type === "block" && e.block.kind === "markdown" && e.block.text ? [e.block.text] : [],
-  );
-  const stored = job.reply?.message?.trim() ?? "";
-  return Math.max(stored.length, fromStream.join("\n\n").length);
+async function isLatestJobOnAgent(job: Job) {
+  const store = await getStoreFresh();
+  const newest = sortedJobsForUser(store, job.ownerUserId).find((j) => j.cursorAgentId === job.cursorAgentId);
+  return newest?.id === job.id;
 }
 
 export async function ensureFullReply(job: Job): Promise<Job> {
   if (job.status !== "replied" || !job.cursorAgentId) return job;
   const stored = job.reply?.message?.trim() ?? "";
-  const seenLen = storedReplyMarkdownLength(job);
-  if (stored.length > 120 && stored.length >= seenLen * 0.85) return job;
 
   try {
-    const full = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    let full = await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    if (job.cursorRunId && !(await isLatestJobOnAgent(job))) {
+      const { getRun } = await import("@/lib/cursor-api");
+      const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
+      const runOnly = await getRun(key, job.cursorAgentId, job.cursorRunId).catch(() => null);
+      const runText = runOnly?.result?.trim();
+      if (runText) full = runText;
+    }
     if (!full || full.startsWith("Agent status:") || full.length <= stored.length + 40) return job;
     await patchJob(job.id, job.ownerUserId, {
       reply: {

@@ -271,19 +271,7 @@ async function createAgent(
   return { agentId, runId: undefined as string | undefined, status: result.status, body: result.body };
 }
 
-export async function fetchFinalAssistantMessage(ownerUserId: string, agentId: string, runId?: string) {
-  if (agentId.startsWith("mock-")) {
-    return "Mock agent completed.";
-  }
-  const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
-  if (runId) {
-    try {
-      const run = await getRun(key, agentId, runId);
-      if (run.result?.trim()) return run.result.trim();
-    } catch {
-      // fall back to the v0 conversation below
-    }
-  }
+async function lastAssistantFromConversation(key: string, agentId: string) {
   const conversation = await getAgentConversation(key, agentId);
   const messages = conversation.messages ?? [];
   for (let i = messages.length - 1; i >= 0; i -= 1) {
@@ -293,6 +281,33 @@ export async function fetchFinalAssistantMessage(ownerUserId: string, agentId: s
       if (m.text?.trim()) return m.text.trim();
     }
   }
+  return "";
+}
+
+function longestText(...parts: (string | undefined)[]) {
+  return parts
+    .map((p) => p?.trim() ?? "")
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)[0];
+}
+
+export async function fetchFinalAssistantMessage(ownerUserId: string, agentId: string, runId?: string) {
+  if (agentId.startsWith("mock-")) {
+    return "Mock agent completed.";
+  }
+  const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
+  let fromRun: string | undefined;
+  if (runId) {
+    try {
+      const run = await getRun(key, agentId, runId);
+      if (run.result?.trim()) fromRun = run.result.trim();
+    } catch {
+      // fall back to conversation when this run has no stored result
+    }
+  }
+  const fromConversation = await lastAssistantFromConversation(key, agentId).catch(() => "");
+  const best = longestText(fromRun, fromConversation);
+  if (best) return best;
   const agent = await getAgent(key, agentId);
   return `Agent status: ${agent.status || "unknown"}`;
 }
