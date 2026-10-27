@@ -123,6 +123,8 @@ function threadToIndexEntry(thread: WebThread): ThreadIndexEntry {
  * title (older chats); hide empty placeholders only.
  */
 export function isSidebarThread(thread: { id: string; title?: string | null }) {
+  // Dedicated Portfolio AI book — not a general chat in the /ai sidebar.
+  if (thread.id === "portfolio") return false;
   if (thread.id !== "main") return true;
   const title = (thread.title || "").trim();
   if (!title) return false;

@@ -63,7 +63,13 @@ function eventSummary(e: StreamEvent) {
     case "block":
       return e.block.kind === "markdown" ? e.block.text.slice(0, 80) : `${e.block.kind}${"title" in e.block && e.block.title ? ` · ${e.block.title}` : ""}`;
     case "action_required":
-      return e.action.kind === "order_confirmation" ? `order · ${e.action.order.side} ${e.action.order.quantity} ${e.action.order.symbol}` : `login · ${e.action.service}`;
+      if (e.action.kind === "order_confirmation") {
+        return `order · ${e.action.order.side} ${e.action.order.quantity} ${e.action.order.symbol}`;
+      }
+      if (e.action.kind === "portfolio_confirmation") {
+        return `portfolio · ${e.action.mode} ${e.action.holdings.length} lines`;
+      }
+      return `login · ${e.action.service}`;
     case "error":
       return e.message;
     default:

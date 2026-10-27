@@ -146,6 +146,15 @@ export function ActionCard({
       </div>
     );
   }
+  if (action.kind === "portfolio_confirmation") {
+    return (
+      <div className="overflow-hidden rounded-xl border bg-card p-4">
+        <p className="font-medium">{action.mode === "merge" ? "Update holdings" : "Replace holdings"}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{action.summary}</p>
+        <p className="mt-2 text-xs text-muted-foreground">{action.holdings.length} lines · confirm in Portfolio</p>
+      </div>
+    );
+  }
   const o = action.order;
   const status = order?.status ?? "proposed";
   const buy = o.side === "BUY";

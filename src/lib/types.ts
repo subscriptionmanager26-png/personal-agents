@@ -64,9 +64,25 @@ export type OrderProposal = {
   decidedAt?: string;
 };
 
+export type PortfolioHoldingDraft = {
+  ticker: string;
+  qty: number;
+  /** Average cost per unit in INR, when known. */
+  avg?: number;
+  name?: string;
+};
+
 export type ActionRequired =
   | { kind: "connection_login"; service: string; url: string; message?: string }
-  | { kind: "order_confirmation"; orderId: string; order: OrderRequest; rationale: string; expiresAt: string };
+  | { kind: "order_confirmation"; orderId: string; order: OrderRequest; rationale: string; expiresAt: string }
+  | {
+      kind: "portfolio_confirmation";
+      proposalId: string;
+      mode: "replace" | "merge";
+      holdings: PortfolioHoldingDraft[];
+      summary: string;
+      expiresAt: string;
+    };
 
 /** Ordered events for one message; `seq` doubles as the SSE event id. */
 export type StreamEvent = { seq: number; at: string } & (

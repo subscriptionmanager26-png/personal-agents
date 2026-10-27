@@ -15,7 +15,8 @@ import {
 import { describeOrder, proposeOrder, validateOrder } from "@/lib/orders";
 import { runtimeForUserId } from "@/lib/runtime";
 import { createFileToken, verifyMemoryToken } from "@/lib/run-token";
-import type { MemoryEntry, StreamEventInput } from "@/lib/types";
+import { randomId } from "@/lib/crypto";
+import type { MemoryEntry, PortfolioHoldingDraft, StreamEventInput } from "@/lib/types";
 import { cardBlock, chartBlock, safeLoginUrl, tableBlock } from "@/lib/ui-blocks";
 import { getUser } from "@/lib/users";
 import { canUseAgent } from "@/lib/workspaces";
@@ -172,6 +173,37 @@ const UI_TOOLS: McpTool[] = [
         price: { type: "number", description: "Required for LIMIT orders" },
         product: { type: "string", enum: ["CNC", "MIS"], description: "CNC = delivery (default), MIS = intraday" },
         rationale: { type: "string", description: "One or two sentences the client sees next to the confirm button." },
+      },
+    },
+  },
+  {
+    name: "propose_portfolio_holdings",
+    description:
+      "Propose an update to the client's CURRENT HOLDINGS book (ticker + quantity, optional avg cost). Does NOT save until they confirm in the Portfolio app. Use after parsing a statement, CSV, paste, or their edit instructions. Prefer mode=replace for a full book from a statement; mode=merge to add/change specific lines.",
+    inputSchema: {
+      type: "object",
+      required: ["holdings", "summary"],
+      properties: {
+        mode: { type: "string", enum: ["replace", "merge"], description: "Default replace." },
+        summary: {
+          type: "string",
+          description: "Short client-facing summary of what will change if they confirm.",
+        },
+        holdings: {
+          type: "array",
+          minItems: 1,
+          maxItems: 200,
+          items: {
+            type: "object",
+            required: ["ticker", "qty"],
+            properties: {
+              ticker: { type: "string", description: "NSE/BSE symbol or fund code, e.g. HDFCBANK" },
+              qty: { type: "number", minimum: 0, description: "Units held (0 removes on merge)." },
+              avg: { type: "number", description: "Average cost per unit in INR, if known" },
+              name: { type: "string" },
+            },
+          },
+        },
       },
     },
   },
@@ -375,6 +407,50 @@ async function callUiTool(ownerUserId: string, jobId: string, name: string, args
         order_id: proposal.id,
         status: "awaiting_client_confirmation",
         note: "Not placed. Tell the client to review and confirm it in the app.",
+      });
+    }
+    case "propose_portfolio_holdings": {
+      const summary = str(args.summary)?.trim();
+      if (!summary) return toolText({ error: "summary is required" }, true);
+      const mode = args.mode === "merge" ? "merge" : "replace";
+      const raw = Array.isArray(args.holdings) ? args.holdings : [];
+      const holdings: PortfolioHoldingDraft[] = [];
+      for (const row of raw) {
+        if (!row || typeof row !== "object") continue;
+        const r = row as Record<string, unknown>;
+        const ticker = str(r.ticker)?.trim().toUpperCase();
+        const qty = typeof r.qty === "number" ? r.qty : Number(r.qty);
+        if (!ticker || !Number.isFinite(qty) || qty < 0) continue;
+        const draft: PortfolioHoldingDraft = { ticker, qty };
+        if (typeof r.avg === "number" && Number.isFinite(r.avg) && r.avg > 0) draft.avg = r.avg;
+        const name = str(r.name)?.trim();
+        if (name) draft.name = name.slice(0, 120);
+        holdings.push(draft);
+      }
+      if (!holdings.length) return toolText({ error: "holdings must include at least one ticker with qty." }, true);
+      const job = await getJob(jobId);
+      if (!job || job.ownerUserId !== ownerUserId || job.status === "replied" || job.status === "error") {
+        return toolText({ error: "This message is already finished." }, true);
+      }
+      const proposalId = randomId("pfprop");
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+      await emit(ownerUserId, jobId, {
+        type: "action_required",
+        action: {
+          kind: "portfolio_confirmation",
+          proposalId,
+          mode,
+          holdings,
+          summary: summary.slice(0, 500),
+          expiresAt,
+        },
+      });
+      return toolText({
+        proposal_id: proposalId,
+        mode,
+        lines: holdings.length,
+        status: "awaiting_client_confirmation",
+        note: "Not saved. Tell the client to review and confirm on the Portfolio page.",
       });
     }
     default:

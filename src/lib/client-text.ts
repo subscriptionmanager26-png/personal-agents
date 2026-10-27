@@ -77,9 +77,13 @@ export function clientBlock(block: UiBlock): UiBlock {
 }
 
 export function clientAction(action: ActionRequired): ActionRequired {
-  return action.kind === "connection_login"
-    ? { ...action, message: action.message && clientText(action.message) }
-    : { ...action, rationale: clientText(action.rationale) };
+  if (action.kind === "connection_login") {
+    return { ...action, message: action.message && clientText(action.message) };
+  }
+  if (action.kind === "portfolio_confirmation") {
+    return { ...action, summary: clientText(action.summary) };
+  }
+  return { ...action, rationale: clientText(action.rationale) };
 }
 
 export function clientStreamEvent<T extends StreamEvent | StreamEventInput>(event: T): T {
