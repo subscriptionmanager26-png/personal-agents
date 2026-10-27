@@ -82,6 +82,21 @@ export async function revokeApiKey(ownerUserId: string, workspaceId: string, key
 const API_KEY_CACHE_MS = 60_000;
 const apiKeyCache = new Map<string, { workspace: Workspace; exp: number }>();
 
+/** Workspaces only — avoid assembling the full store on every cold API-key auth. */
+async function workspacesForApiKeyAuth(): Promise<Record<string, Workspace>> {
+  try {
+    const { relationalStoreEnabled, readGlobalWorkspaces } = await import("@/lib/store-relational");
+    if (relationalStoreEnabled()) {
+      const workspaces = await readGlobalWorkspaces();
+      if (workspaces && Object.keys(workspaces).length) return workspaces;
+    }
+  } catch (error) {
+    console.error("[api-key] global workspace read failed; falling back to getStore", error);
+  }
+  const store = await getStore();
+  return store.workspaces ?? {};
+}
+
 /** Resolves the workspace for an `Authorization: Bearer pa_…` header. */
 export async function authenticateApiKey(authorization: string | null) {
   const match = authorization?.match(/^Bearer\s+pa_([a-f0-9]{12})_([A-Za-z0-9_-]{20,})$/);
@@ -91,19 +106,20 @@ export async function authenticateApiKey(authorization: string | null) {
   const hit = apiKeyCache.get(cacheKey);
   if (hit && hit.exp > Date.now()) return hit.workspace;
 
-  const store = await getStore();
+  const workspaces = await workspacesForApiKeyAuth();
   const expected = Buffer.from(hashSecret(secret), "hex");
-  for (const ws of Object.values(store.workspaces)) {
+  for (const ws of Object.values(workspaces)) {
     const key = ws.apiKeys?.find((k) => k.id === keyId);
     if (!key) continue;
     const actual = Buffer.from(key.hash, "hex");
     if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return undefined;
+    // Touch lastUsedAt off the critical path — never block auth on a full store write.
     const stale = !key.lastUsedAt || Date.now() - Date.parse(key.lastUsedAt) > 60_000;
     if (stale) {
-      await updateStore((s) => {
+      void updateStore((s) => {
         const k = s.workspaces[ws.id]?.apiKeys?.find((x) => x.id === keyId);
         if (k) k.lastUsedAt = new Date().toISOString();
-      });
+      }).catch(() => undefined);
     }
     if (apiKeyCache.size > 64) apiKeyCache.clear();
     apiKeyCache.set(cacheKey, { workspace: ws, exp: Date.now() + API_KEY_CACHE_MS });

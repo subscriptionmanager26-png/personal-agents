@@ -45,10 +45,10 @@ export async function requireApiUser(
 }
 
 /**
- * Threads list hot path: API key (+ cache) and derive owner id without loading the user blob.
- * Sync on login already created the user; index read does not need the profile row.
+ * Read-path auth: API key (+ cache) and derive owner id without loading the user blob.
+ * Sync on login already created the user; list/index reads do not need the profile row.
  */
-export async function requireApiUserForThreads(
+export async function requireApiUserLight(
   request: Request,
   rawUserId: string,
 ): Promise<{ workspace: Workspace; ownerUserId: string; externalId: string } | { response: Response }> {
@@ -64,6 +64,9 @@ export async function requireApiUserForThreads(
     externalId,
   };
 }
+
+/** @deprecated alias — use requireApiUserLight */
+export const requireApiUserForThreads = requireApiUserLight;
 
 export async function readJson(request: Request): Promise<Record<string, unknown> | undefined> {
   try {

@@ -1,5 +1,5 @@
 import { isValidThreadId, listMessages, messageView } from "@/lib/agent-api";
-import { apiError, readJson, requireApiUser } from "@/lib/api-auth";
+import { apiError, readJson, requireApiUser, requireApiUserLight } from "@/lib/api-auth";
 import { isStoreReadError } from "@/lib/store-errors";
 import { ChatRejected, enqueueChat } from "@/lib/dispatch-web";
 
@@ -8,18 +8,36 @@ export const dynamic = "force-dynamic";
 type Params = { params: Promise<{ userId: string }> };
 
 export async function GET(request: Request, { params }: Params) {
+  const t0 = Date.now();
+  let authMs = 0;
+  let listMs = 0;
   try {
-    const auth = await requireApiUser(request, (await params).userId);
-    if ("response" in auth) return auth.response;
+    const authStart = Date.now();
+    const auth = await requireApiUserLight(request, (await params).userId);
+    authMs = Date.now() - authStart;
+    if ("response" in auth) {
+      auth.response.headers.set("Server-Timing", `auth;dur=${authMs},total;dur=${Date.now() - t0}`);
+      return auth.response;
+    }
     const url = new URL(request.url);
     const threadId = url.searchParams.get("threadId") || undefined;
     if (threadId && !isValidThreadId(threadId)) return apiError(400, "invalid_thread_id", "Invalid threadId.");
-    const messages = await listMessages(auth.user.id, {
+    const listStart = Date.now();
+    const messages = await listMessages(auth.ownerUserId, {
       threadId,
       limit: Number(url.searchParams.get("limit")) || undefined,
       source: "api",
     });
-    return Response.json({ messages });
+    listMs = Date.now() - listStart;
+    return Response.json(
+      { messages },
+      {
+        headers: {
+          "Cache-Control": "private, no-cache",
+          "Server-Timing": `auth;dur=${authMs},list;dur=${listMs},total;dur=${Date.now() - t0}`,
+        },
+      },
+    );
   } catch (error) {
     console.error("[v1/users/messages GET]", error);
     if (isStoreReadError(error)) return apiError(503, error.code, error.message);

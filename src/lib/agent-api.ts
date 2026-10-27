@@ -131,13 +131,9 @@ function safeMessageView(job: Job): MessageView {
 
 const ACTIVE_MESSAGE = new Set(["queued", "dispatched", "delivering"]);
 
-function isSettledReply(job: Job) {
-  return job.status === "replied" && Boolean(job.reply?.message?.trim());
-}
-
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-  const { reconcileJob, reconcileErroredJob, ensureFullReply } = await import("@/lib/settle");
+  const { reconcileJob } = await import("@/lib/settle");
   const {
     listJobRowsForThread,
     listJobRowsForUser,
@@ -169,28 +165,11 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
   }
 
   const out: MessageView[] = [];
-  const rows: Job[] = [];
   for (const job of candidates) {
-    // Settled replies: return as stored — never heal-on-read (avoids Cursor + store writes on every chat open).
-    let row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
-    rows.push(row);
-  }
-  for (let i = 0; i < rows.length; i += 1) {
-    if (rows[i].status === "error") {
-      try {
-        rows[i] = await reconcileErroredJob(rows[i], rows);
-      } catch (error) {
-        console.error("[listMessages] reconcileErroredJob failed", rows[i].id, error);
-      }
-    } else if (rows[i].status === "replied" && !isSettledReply(rows[i])) {
-      // Incomplete settle (status replied but empty body) — enrich once.
-      try {
-        rows[i] = await ensureFullReply(rows[i]);
-      } catch {
-        // keep row
-      }
-    }
-    out.push(safeMessageView(rows[i]));
+    // List path: only poll Cursor for still-active jobs. Heal / ensureFullReply
+    // belongs on single-message GET — never block chat open on Cursor.
+    const row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
+    out.push(safeMessageView(row));
   }
   // Sort by creation time when serving a thread.
   // patchJob always updates `updatedAt` (e.g. during healing), which breaks insertion order

@@ -1,6 +1,6 @@
 import { coerceStoreData, emptyStoreData } from "@/lib/store-coerce";
 import { getSupabaseAdmin, supabaseStoreConfigured } from "@/lib/supabase-admin";
-import type { Job, JobSource, PersonalUser, StoreData, WebThread } from "@/lib/types";
+import type { Job, JobSource, PersonalUser, StoreData, WebThread, Workspace } from "@/lib/types";
 
 /**
  * Phase 2 storage without new DDL: shard into `personal_agents_store` rows.
@@ -12,9 +12,11 @@ import type { Job, JobSource, PersonalUser, StoreData, WebThread } from "@/lib/t
  *   pa:t:{owner}:{source}:{threadId}
  *   pa:j:{jobId}
  *   pa:idx:threads:{owner}:{source}  — O(1) sidebar list
+ *   pa:idx:jobs:{owner}:{source}:{threadId} — newest job ids for a thread
  */
 const TABLE = "personal_agents_store";
 export const THREAD_INDEX_LIMIT = 40;
+export const JOB_INDEX_LIMIT = 100;
 
 function threadStoreKey(ownerUserId: string, source: "web" | "api", threadId: string) {
   return `${ownerUserId}:${source}:${threadId}`;
@@ -40,6 +42,17 @@ function jobRowId(jobId: string) {
 export function threadIndexRowId(ownerUserId: string, source: string) {
   return `pa:idx:threads:${enc(ownerUserId)}:${enc(source)}`;
 }
+export function jobIndexRowId(ownerUserId: string, source: string, threadId: string) {
+  return `pa:idx:jobs:${enc(ownerUserId)}:${enc(source)}:${enc(threadId)}`;
+}
+
+type StoredJobIndex = {
+  kind: "job_index";
+  ownerUserId: string;
+  source: JobSource;
+  threadId: string;
+  jobIds: string[];
+};
 
 /**
  * When true, hot reads prefer sharded pa:* rows over the monolithic `main` blob.
@@ -136,7 +149,46 @@ export async function upsertJobRow(job: Job): Promise<void> {
   const payload: StoredJob = { kind: "job", job };
   const error = await upsertRow(jobRowId(job.id), payload, job.updatedAt);
   if (error) console.error("[store-relational] upsert job", job.id, error.message);
+  await upsertJobIndexEntry(job).catch((err) =>
+    console.error("[store-relational] job index", job.id, err),
+  );
   await trimUserJobs(job.ownerUserId).catch(() => undefined);
+}
+
+/** O(1) read of workspace map for API-key auth (no users/jobs/threads assemble). */
+export async function readGlobalWorkspaces(): Promise<Record<string, Workspace> | null> {
+  if (!supabaseStoreConfigured()) return null;
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase.from(TABLE).select("data").eq("id", globalRowId()).maybeSingle();
+  if (error) throw error;
+  const global = data?.data as StoredGlobal | undefined;
+  if (!global || global.kind !== "global") return null;
+  return global.workspaces ?? {};
+}
+
+async function upsertJobIndexEntry(job: Job): Promise<void> {
+  if (!dualWriteRelationalEnabled()) return;
+  const threadId = job.webThreadId ?? "main";
+  const source = (job.source ?? "web") as JobSource;
+  const indexId = jobIndexRowId(job.ownerUserId, source, threadId);
+  const supabase = getSupabaseAdmin();
+  const { data: existing, error: readErr } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", indexId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+  const prev = (existing?.data as StoredJobIndex | undefined)?.jobIds ?? [];
+  const next = [job.id, ...prev.filter((id) => id !== job.id)].slice(0, JOB_INDEX_LIMIT);
+  const payload: StoredJobIndex = {
+    kind: "job_index",
+    ownerUserId: job.ownerUserId,
+    source,
+    threadId,
+    jobIds: next,
+  };
+  const error = await upsertRow(indexId, payload, job.updatedAt);
+  if (error) throw error;
 }
 
 export async function upsertWebThreadRow(thread: WebThread): Promise<void> {
@@ -258,15 +310,65 @@ export async function listJobRowsForThread(
   threadId: string,
   limit: number,
 ): Promise<Job[]> {
+  const indexed = await readJobIndex(ownerUserId, source, threadId, limit);
+  if (indexed) return indexed;
+
+  // One-shot rebuild path for threads created before the job index existed.
   const rows = await listRowsByPrefix("pa:j:");
-  return rows
+  const jobs = rows
     .map((r) => (r.data as StoredJob | null)?.job)
     .filter(
       (j): j is Job =>
-        Boolean(j && j.ownerUserId === ownerUserId && (j.source ?? "web") === source && j.webThreadId === threadId),
+        Boolean(
+          j &&
+            j.ownerUserId === ownerUserId &&
+            (j.source ?? "web") === source &&
+            (j.webThreadId ?? "main") === threadId,
+        ),
     )
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-    .slice(0, limit);
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  if (dualWriteRelationalEnabled() && jobs.length) {
+    const payload: StoredJobIndex = {
+      kind: "job_index",
+      ownerUserId,
+      source,
+      threadId,
+      jobIds: jobs.map((j) => j.id).slice(0, JOB_INDEX_LIMIT),
+    };
+    await upsertRow(jobIndexRowId(ownerUserId, source, threadId), payload).catch(() => undefined);
+  }
+  return jobs.slice(0, limit);
+}
+
+/** Newest-first jobs for a thread via pa:idx:jobs (falls back to null on miss). */
+export async function readJobIndex(
+  ownerUserId: string,
+  source: JobSource,
+  threadId: string,
+  limit: number,
+): Promise<Job[] | null> {
+  if (!supabaseStoreConfigured()) return null;
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", jobIndexRowId(ownerUserId, source, threadId))
+    .maybeSingle();
+  if (error) throw error;
+  const stored = data?.data as StoredJobIndex | undefined;
+  if (!stored || stored.kind !== "job_index" || !Array.isArray(stored.jobIds) || !stored.jobIds.length) {
+    return null;
+  }
+  const ids = stored.jobIds.slice(0, Math.max(limit, 1));
+  const rowIds = ids.map((id) => jobRowId(id));
+  const { data: jobRows, error: jobsErr } = await supabase.from(TABLE).select("id,data").in("id", rowIds);
+  if (jobsErr) throw jobsErr;
+  const byId = new Map<string, Job>();
+  for (const row of jobRows ?? []) {
+    const job = (row.data as StoredJob | null)?.job;
+    if (job) byId.set(job.id, job);
+  }
+  return ids.map((id) => byId.get(id)).filter((j): j is Job => Boolean(j));
 }
 
 export async function listJobRowsForUser(ownerUserId: string, limit: number): Promise<Job[]> {
