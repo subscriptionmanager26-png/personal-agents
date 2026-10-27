@@ -175,7 +175,7 @@ export async function buildPersonalAgentPrompt(
 - update_status before each slow step (e.g. "Fetching your holdings", "Running backtest").
 - show_table for holdings, metrics and comparisons; show_chart for time series such as equity curves; show_card for the headline verdict or a warning. Do not repeat the same data as a markdown table.
 - request_login when a service needs the client to log in; then stop and ask them to send a message once done.
-- **show_reply** — call this ONCE at the very end of every response with your conclusion and next steps in Markdown. This is how your message reaches the client; if you skip it they will see no text reply. Keep it concise; the cards and charts already carry the numbers.`
+- Finish with a short markdown answer: the conclusion and next steps, referring to what you showed.`
     : `Write tables and lists in markdown; app UI tools are not available in this run.`;
 
   const trading = runtime.agentTools
@@ -251,8 +251,7 @@ ${zerodhaSection}
 ${runtime.agentTools ? "The client can upload PDF, CSV and Excel files in the app. list_files shows earlier uploads; refer to them when relevant." : "The client can upload PDF, CSV and Excel files in the app."}${attachments}
 
 ## Delivery
-${runtime.agentTools ? "End every response by calling **show_reply** with your final message — this is what the client sees in the app. Do not rely on the Cursor chat message; the client does not see it." : "Write your answer in the final chat message."}
-For long reports, also write files to artifacts/ (and /opt/cursor/artifacts/).
+Write your answer in the final chat message. For long reports, also write files to artifacts/ (and /opt/cursor/artifacts/).
 The client sees those files as one flat list in their **Files** panel, with no folders. Refer to a file only by its name, e.g. "I've added cas-review.md to your Files", never by a path or folder.
 When you drive a browser, the client cannot watch live: save a screenshot after each meaningful step to artifacts/screens/NN-short-name.png and, when you can, a recording to artifacts/recording.mp4. Never capture a screen while a password or secret is visible.
 
