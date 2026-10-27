@@ -166,6 +166,13 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
     }
     out.push(safeMessageView(rows[i]));
   }
+  // Sort by creation time when serving a thread.
+  // patchJob always updates `updatedAt` (e.g. during healing), which breaks insertion order
+  // if we relied on sortedJobsForUser's updatedAt-based sort.
+  // Pramaan expects newest-creation-first so its .reverse() produces oldest-first for display.
+  if (opts.threadId) {
+    out.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
   return out;
 }
 
