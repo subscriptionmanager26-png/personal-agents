@@ -426,14 +426,40 @@ export async function reconcileErroredJob(job: Job, threadPeers?: Job[]): Promis
 }
 
 export async function ensureFullReply(job: Job): Promise<Job> {
-  if (job.status !== "replied" || !job.cursorAgentId) return job;
+  if (job.status !== "replied") return job;
   const stored = job.reply?.message?.trim() ?? "";
 
+  // Resolve the agent ID: from the job itself, or from the thread binding.
+  let agentId = job.cursorAgentId;
+  if (!agentId) {
+    try {
+      const { agentBindingForJob } = await import("@/lib/thread-agents");
+      const { getUser } = await import("@/lib/users");
+      const user = await getUser(job.ownerUserId);
+      if (user) {
+        const binding = await agentBindingForJob(job, user);
+        agentId = binding.agentId;
+      }
+    } catch {
+      // best-effort
+    }
+  }
+  if (!agentId) return job;
+
   try {
-    const full =
-      job.cursorRunId && !(await isLatestJobOnAgent(job))
-        ? await fetchAssistantTextForRun(job.ownerUserId, job.cursorAgentId, job.cursorRunId)
-        : await fetchFinalAssistantMessage(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    let full: string;
+    if (job.cursorRunId) {
+      // Run-specific fetch: safe in multi-turn threads because it only reads THIS run's result.
+      full = await fetchAssistantTextForRun(job.ownerUserId, agentId, job.cursorRunId);
+      // If the run result is empty, fall back to latest-turn only when this IS the newest job.
+      if (!full && (await isLatestJobOnAgent(job))) {
+        full = await fetchFinalAssistantMessage(job.ownerUserId, agentId, undefined);
+      }
+    } else {
+      // No runId: can only safely use the latest turn when this is the newest job.
+      if (!(await isLatestJobOnAgent(job))) return job;
+      full = await fetchFinalAssistantMessage(job.ownerUserId, agentId, undefined);
+    }
     if (!full || full.startsWith("Agent status:") || full.length <= stored.length + 40) return job;
     await patchJob(job.id, job.ownerUserId, {
       reply: {

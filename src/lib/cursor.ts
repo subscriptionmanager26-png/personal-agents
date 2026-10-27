@@ -353,15 +353,18 @@ export async function fetchFinalAssistantMessage(ownerUserId: string, agentId: s
     return "Mock agent completed.";
   }
   const key = (await runtimeForUserId(ownerUserId)).cursorApiKey;
-  let fromRun: string | undefined;
+
+  // When a runId is known, prefer the run-specific result — it's scoped to THIS turn.
+  // Do NOT mix with lastAssistantFromConversation: in a multi-turn thread that function
+  // returns the LATEST turn, which may belong to a different job and produces cross-
+  // contamination (e.g. job A gets job B's longer reply text).
   if (runId) {
-    fromRun = await fetchAssistantTextForRun(ownerUserId, agentId, runId);
-    if (fromRun) {
-      const fromConversation = await lastAssistantFromConversation(key, agentId).catch(() => "");
-      const best = longestText(fromRun, fromConversation);
-      if (best) return best;
-    }
+    const fromRun = await fetchAssistantTextForRun(ownerUserId, agentId, runId);
+    if (fromRun) return fromRun;
   }
+
+  // No runId (or run had no result yet): fall back to the latest conversation turn.
+  // This is only correct for single-turn agents or the most-recent job.
   const fromConversation = await lastAssistantFromConversation(key, agentId).catch(() => "");
   if (fromConversation) return fromConversation;
   const agent = await getAgent(key, agentId);
