@@ -136,7 +136,7 @@ export async function settleByAgentId(agentId: string) {
   const jobs = await listDispatchedJobs();
   const matches = jobs.filter((j) => j.cursorAgentId === agentId);
   for (const job of matches) {
-    await settleJob(job.id, job.ownerUserId);
+    await settleIfFinished(job);
   }
 }
 
@@ -249,7 +249,20 @@ export async function reconcileJob(job: Job): Promise<Job> {
 
   if (ACTIVE_JOB.has(job.status) && job.status !== "queued" && job.cursorAgentId) {
     await settleIfFinished(job).catch(() => undefined);
-    return (await getJob(job.id, { fresh: true })) ?? job;
+    let row = (await getJob(job.id, { fresh: true })) ?? job;
+    const ageMs = Date.now() - Date.parse(row.updatedAt || row.createdAt);
+    if (ACTIVE_JOB.has(row.status) && ageMs > 3 * 60_000 && row.cursorRunId) {
+      try {
+        const key = (await runtimeForUserId(row.ownerUserId)).cursorApiKey;
+        const { cancelRun } = await import("@/lib/cursor-api");
+        await cancelRun(key, row.cursorAgentId!, row.cursorRunId).catch(() => undefined);
+        await settleIfFinished(row).catch(() => undefined);
+        row = (await getJob(job.id, { fresh: true })) ?? row;
+      } catch {
+        // keep row
+      }
+    }
+    return row;
   }
 
   return job;

@@ -120,6 +120,79 @@ export async function createRun(token: string, agentId: string, promptText: stri
   });
 }
 
+export function extractSteerRunId(body: unknown): string | undefined {
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as Record<string, unknown>;
+  if (typeof record.runId === "string" && record.runId.trim()) return record.runId.trim();
+  return extractRunId(body);
+}
+
+export async function cancelRun(token: string, agentId: string, runId: string) {
+  return cursorPost(token, `/v1/agents/${agentId}/runs/${runId}/cancel`, {});
+}
+
+const ACTIVE_AGENT = new Set(["CREATING", "RUNNING", "WAITING_FOR_BACKGROUND_WORK", "ACTIVE"]);
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Cancel a stuck run, wait, retry createRun, then steer if Cursor still returns 409. */
+export async function recoverBusyAgentForNewRun(
+  token: string,
+  agentId: string,
+  promptText: string,
+  mcpServers?: McpServerDef[],
+): Promise<{ runId: string; status: number; body: unknown; mode: "run" | "steer" } | undefined> {
+  try {
+    const v1 = await getAgentV1(token, agentId);
+    const latestRunId = v1.latestRunId;
+    if (latestRunId) {
+      try {
+        const run = await getRun(token, agentId, latestRunId);
+        const st = (run.status || "").toUpperCase();
+        if (!TERMINAL_RUN_STATUSES.includes(st)) {
+          await cancelRun(token, agentId, latestRunId).catch(() => undefined);
+          await sleep(1200);
+        }
+      } catch {
+        await cancelRun(token, agentId, latestRunId).catch(() => undefined);
+        await sleep(1200);
+      }
+    } else if (ACTIVE_AGENT.has((v1.status || "").toUpperCase())) {
+      await sleep(1500);
+    }
+  } catch {
+    // continue with retries
+  }
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const retry = await createRun(token, agentId, promptText, mcpServers);
+    const runId = extractRunId(retry.body);
+    if (runId) return { runId, status: retry.status, body: retry.body, mode: "run" };
+    if (retry.status !== 409) break;
+    await sleep(1500);
+  }
+
+  const steer = await cursorPost<{ delivery?: string; runId?: string }>(token, `/v1/agents/${agentId}/runs`, {
+    prompt: { text: promptText },
+    delivery: "steer",
+  });
+  if (steer.status === 202 || steer.status === 200) {
+    let runId = extractSteerRunId(steer.body);
+    if (!runId) {
+      try {
+        runId = (await getAgentV1(token, agentId)).latestRunId;
+      } catch {
+        runId = undefined;
+      }
+    }
+    if (runId) return { runId, status: steer.status, body: steer.body, mode: "steer" };
+  }
+
+  return undefined;
+}
+
 /** Opens the raw Cursor SSE stream for one run. Caller owns the response body. */
 export async function openRunStream(
   token: string,

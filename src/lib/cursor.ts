@@ -10,6 +10,7 @@ import {
   getAgent,
   getAgentConversation,
   getRun,
+  recoverBusyAgentForNewRun,
   type McpServerDef,
 } from "@/lib/cursor-api";
 import { ensurePersonalRepo, syncWorkspaceSkills } from "@/lib/github";
@@ -166,38 +167,42 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   // One Cursor agent per chat thread; replace only when skills or repo mode changed.
   const binding = await agentBindingForJob(job, current);
   if (binding.agentId && binding.skillsHash === hash) {
+    const { reconcileActiveJobsInThread } = await import("@/lib/settle");
+    await reconcileActiveJobsInThread(current.id, job.source ?? "web", job.webThreadId ?? "main");
+
     const run = await createRun(rt.cursorApiKey, binding.agentId, promptText, mcp.servers);
-    const runId = run.ok ? extractRunId(run.body) : undefined;
+    let runId = extractRunId(run.body);
+    let runStatus = run.status;
+    let runBody = run.body;
+    let dispatchDetail = `New run on agent ${binding.agentId}`;
+
+    if (!runId && run.status === 409) {
+      const recovered = await recoverBusyAgentForNewRun(
+        rt.cursorApiKey,
+        binding.agentId,
+        promptText,
+        mcp.servers,
+      );
+      if (recovered) {
+        runId = recovered.runId;
+        runStatus = recovered.status;
+        runBody = recovered.body;
+        dispatchDetail =
+          recovered.mode === "steer"
+            ? `Steered agent ${binding.agentId}`
+            : `New run on agent ${binding.agentId} (after 409)`;
+      }
+    }
+
     if (runId) {
       await patchJob(job.id, current.id, {
         status: "dispatched",
         cursorAgentId: binding.agentId,
         cursorRunId: runId,
-        cursorHttpStatus: run.status,
-        cursorBody: run.body,
-        event: { type: "dispatch", detail: `New run on agent ${binding.agentId}` },
+        cursorHttpStatus: runStatus,
+        cursorBody: runBody,
+        event: { type: "dispatch", detail: dispatchDetail },
       });
-      return { user: current, agentId: binding.agentId, mock: false };
-    }
-    if (run.status === 409) {
-      const { reconcileActiveJobsInThread, settleByAgentId } = await import("@/lib/settle");
-      await reconcileActiveJobsInThread(current.id, job.source ?? "web", job.webThreadId ?? "main");
-      await settleByAgentId(binding.agentId);
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      const retry = await createRun(rt.cursorApiKey, binding.agentId, promptText, mcp.servers);
-      const retryRunId = retry.ok ? extractRunId(retry.body) : undefined;
-      if (retryRunId) {
-        await patchJob(job.id, current.id, {
-          status: "dispatched",
-          cursorAgentId: binding.agentId,
-          cursorRunId: retryRunId,
-          cursorHttpStatus: retry.status,
-          cursorBody: retry.body,
-          event: { type: "dispatch", detail: `New run on agent ${binding.agentId} (after 409)` },
-        });
-        return { user: current, agentId: binding.agentId, mock: false };
-      }
-      await failJob(job, current.id, "Your agent is still working on the previous message. Try again when it replies.");
       return { user: current, agentId: binding.agentId, mock: false };
     }
     // Agent expired or was removed: start a fresh one below.
