@@ -61,6 +61,9 @@ test("file types are decided by content, not just the extension", async () => {
   assert.ok("error" in detectFile("a.xlsx", Buffer.from("symbol,qty\nINFY,1")));
   assert.equal((detectFile("a.xlsx", await xlsxBuffer()) as { kind: string }).kind, "xlsx");
   assert.equal((detectFile("a.csv", Buffer.from("a,b\n1,2")) as { kind: string }).kind, "csv");
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 1, 2, 3]);
+  assert.deepEqual(detectFile("holdings.png", png), { kind: "image", mimeType: "image/png" });
+  assert.ok("error" in detectFile("holdings.png", Buffer.from("not-a-png")));
 });
 
 test("CSV, Excel and PDF uploads are extracted and readable in bounded slices", async () => {

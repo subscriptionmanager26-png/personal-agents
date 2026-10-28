@@ -414,7 +414,7 @@ async function callUiTool(ownerUserId: string, jobId: string, name: string, args
       if (!summary) return toolText({ error: "summary is required" }, true);
       const mode = args.mode === "merge" ? "merge" : "replace";
       const raw = Array.isArray(args.holdings) ? args.holdings : [];
-      const holdings: PortfolioHoldingDraft[] = [];
+      const byTicker = new Map<string, PortfolioHoldingDraft>();
       for (const row of raw) {
         if (!row || typeof row !== "object") continue;
         const r = row as Record<string, unknown>;
@@ -425,8 +425,10 @@ async function callUiTool(ownerUserId: string, jobId: string, name: string, args
         if (typeof r.avg === "number" && Number.isFinite(r.avg) && r.avg > 0) draft.avg = r.avg;
         const name = str(r.name)?.trim();
         if (name) draft.name = name.slice(0, 120);
-        holdings.push(draft);
+        // Last row wins for duplicate tickers so CSV re-exports stay predictable.
+        byTicker.set(ticker, draft);
       }
+      const holdings = [...byTicker.values()];
       if (!holdings.length) return toolText({ error: "holdings must include at least one ticker with qty." }, true);
       const job = await getJob(jobId);
       if (!job || job.ownerUserId !== ownerUserId || job.status === "replied" || job.status === "error") {

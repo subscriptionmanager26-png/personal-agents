@@ -19,7 +19,10 @@ const MAX_COLUMNS = 100;
 const MAX_CELL_CHARS = 2_000;
 
 export type Cell = string | number | boolean | null;
-export type FileExtract = { kind: "pdf"; pages: string[] } | { kind: "table"; sheets: { name: string; rows: Cell[][] }[] };
+export type FileExtract =
+  | { kind: "pdf"; pages: string[] }
+  | { kind: "table"; sheets: { name: string; rows: Cell[][] }[] }
+  | { kind: "image" };
 
 type Failure = { error: string; code: 400 | 404 | 409 | 413 | 415 | 422 | 503 };
 
@@ -30,7 +33,13 @@ const MIME: Record<string, string> = {
   ".csv": "text/csv",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".xls": "application/vnd.ms-excel",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
 };
+
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 export function cleanFileName(raw: string) {
   const base = path.basename(raw.replace(/\\/g, "/")).replace(/[\u0000-\u001f\u007f]/g, "").trim();
@@ -41,24 +50,46 @@ export function cleanFileName(raw: string) {
 
 const startsWith = (bytes: Buffer, sig: number[]) => sig.every((b, i) => bytes[i] === b);
 
+function looksLikeImage(ext: string, bytes: Buffer) {
+  if (ext === ".png") return startsWith(bytes, [0x89, 0x50, 0x4e, 0x47]);
+  if (ext === ".jpg" || ext === ".jpeg") return startsWith(bytes, [0xff, 0xd8, 0xff]);
+  if (ext === ".webp") {
+    return (
+      startsWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+      bytes.length >= 12 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50
+    );
+  }
+  return false;
+}
+
 /** Decides the type from the bytes; the extension only has to agree. */
 export function detectFile(name: string, bytes: Buffer): { kind: FileKind; mimeType: string } | Failure {
   const ext = path.extname(name).toLowerCase();
-  const unsupported = { error: "Only PDF, CSV and Excel (.xlsx, .xls) files are supported.", code: 415 } as const;
+  const unsupported = {
+    error: "Only PDF, CSV, Excel (.xlsx, .xls), and images (PNG, JPG, WEBP) are supported.",
+    code: 415,
+  } as const;
   if (!MIME[ext]) return unsupported;
   const mismatch = { error: `${name} does not look like a real ${ext.slice(1).toUpperCase()} file.`, code: 415 } as const;
   const isZip = startsWith(bytes, [0x50, 0x4b, 0x03, 0x04]);
   const isOle = startsWith(bytes, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]);
 
+  if (IMAGE_EXTS.has(ext)) {
+    return looksLikeImage(ext, bytes) ? { kind: "image", mimeType: MIME[ext]! } : mismatch;
+  }
   if (ext === ".pdf") {
-    return bytes.subarray(0, 1024).includes("%PDF-") ? { kind: "pdf", mimeType: MIME[ext] } : mismatch;
+    return bytes.subarray(0, 1024).includes("%PDF-") ? { kind: "pdf", mimeType: MIME[ext]! } : mismatch;
   }
   if (ext === ".xlsx" || ext === ".xls") {
     // Password-protected .xlsx files are OLE containers, so both signatures are spreadsheets.
-    return isZip || isOle ? { kind: "xlsx", mimeType: MIME[ext] } : mismatch;
+    return isZip || isOle ? { kind: "xlsx", mimeType: MIME[ext]! } : mismatch;
   }
   if (isZip || isOle || bytes.subarray(0, 8192).includes(0)) return mismatch;
-  return { kind: "csv", mimeType: MIME[ext] };
+  return { kind: "csv", mimeType: MIME[ext]! };
 }
 
 // ---------- Extraction ----------
@@ -180,6 +211,9 @@ async function extractTable(kind: "csv" | "xlsx", bytes: Buffer): Promise<Extrac
 }
 
 function extractFile(kind: FileKind, bytes: Buffer, password?: string) {
+  if (kind === "image") {
+    return { extract: { kind: "image" as const }, extractedSize: 0, truncated: false };
+  }
   return kind === "pdf" ? extractPdf(bytes, password) : extractTable(kind, bytes);
 }
 
@@ -346,6 +380,9 @@ export function fileView(file: UploadedFile) {
 }
 
 export function describeFile(file: UploadedFile) {
+  if (file.kind === "image") {
+    return `Image (${file.mimeType}) — use get_file_link to inspect / OCR the screenshot`;
+  }
   if (file.kind === "pdf") {
     const text = file.extractedSize ? "" : ", no text layer (likely scanned)";
     return `PDF, ${file.pages ?? "?"} pages${text}`;
@@ -378,6 +415,14 @@ export function readSlice(
   extract: FileExtract,
   opts: { pages?: string; sheet?: string; offset?: number; limit?: number },
 ) {
+  if (extract.kind === "image") {
+    return {
+      file: file.name,
+      kind: "image",
+      mimeType: file.mimeType,
+      note: "No text extract for images. Use get_file_link and inspect the screenshot (OCR / vision) to read holdings.",
+    };
+  }
   if (extract.kind === "pdf") {
     const budget = 30_000;
     const requested = parsePages(opts.pages, extract.pages.length);
@@ -424,6 +469,7 @@ export function readSlice(
 /** A short preview for the prompt: first pages, or the first rows of each sheet as CSV. */
 export function fileExcerpt(extract: FileExtract, maxChars: number) {
   if (maxChars <= 0) return "";
+  if (extract.kind === "image") return "(image attachment — use get_file_link to analyse)";
   let out = "";
   if (extract.kind === "pdf") {
     for (const [i, text] of extract.pages.entries()) {

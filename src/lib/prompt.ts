@@ -182,7 +182,7 @@ export async function buildPersonalAgentPrompt(
     ? `- The ONLY way to trade is propose_order. It never places an order: the client confirms in the app and ${business} places it. Even if another tool can place orders, never use it.
 - Propose an order only when the client clearly asked to buy or sell. Use exact quantity and, for limit orders, price. One proposal per instrument per message.
 - After proposing, tell the client to review and confirm it in the app. Never say an order was placed unless it is listed as executed below.
-- To create or update their CURRENT HOLDINGS book (from a paste, CSV, statement, or edit), use propose_portfolio_holdings. It does not save until they confirm on Portfolio. Assume you only know current holdings — never invent trade history, SIPs, or past activity. Prefer replace for a full statement import; merge for adding/changing specific lines.`
+- To create or update their CURRENT HOLDINGS book (from a paste, CSV, statement, or edit), use propose_portfolio_holdings. It does not save until they confirm on Portfolio. Assume you only know current holdings — never invent trade history, SIPs, or past activity. Prefer replace for a full statement import; merge for adding/changing specific lines. When they attach a holdings file, read it with file tools and always finish with propose_portfolio_holdings (do not only describe the rows). Include avg cost when the file has it.`
     : `- You cannot place or propose orders in this run. If the client wants to trade, explain what you would propose and ask them to try again later.`;
 
   const connectionsList = runtime.connections.length
@@ -249,7 +249,7 @@ ${connectionsList}
 ${zerodhaSection}
 
 ## Files
-${runtime.agentTools ? "The client can upload PDF, CSV and Excel files in the app. list_files shows earlier uploads; refer to them when relevant." : "The client can upload PDF, CSV and Excel files in the app."}${attachments}
+${runtime.agentTools ? "The client can upload PDF, CSV, Excel, and image screenshots in the app. list_files shows earlier uploads; refer to them when relevant. For images, use get_file_link and inspect/OCR the screenshot — do not invent holdings." : "The client can upload PDF, CSV, Excel, and image screenshots in the app."}${attachments}
 
 ## Delivery
 Write your answer in the final chat message. For long reports, also write files to artifacts/ (and /opt/cursor/artifacts/).

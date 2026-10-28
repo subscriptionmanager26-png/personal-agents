@@ -338,7 +338,7 @@ export type AuditEvent = {
   detail: string;
 };
 
-export type FileKind = "pdf" | "csv" | "xlsx";
+export type FileKind = "pdf" | "csv" | "xlsx" | "image";
 
 export type JobAttachment = { id: string; name: string; kind: FileKind; size: number };
 
