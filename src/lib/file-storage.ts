@@ -49,20 +49,17 @@ async function getRedisObject(key: string): Promise<Buffer | undefined> {
 
 let filesBucketReady: Promise<void> | null = null;
 
-/** Create the private files bucket once if the store migration was never applied. */
+/** Create the private files bucket if missing. Avoid listBuckets on the happy path. */
 async function ensureFilesBucket() {
   if (!filesBucketReady) {
     filesBucketReady = (async () => {
       const supabase = getSupabaseAdmin();
-      const { data, error } = await supabase.storage.listBuckets();
-      if (error) throw new Error(`Supabase list buckets failed: ${error.message}`);
-      if (data?.some((b) => b.name === SUPABASE_FILES_BUCKET)) return;
       const { error: createError } = await supabase.storage.createBucket(SUPABASE_FILES_BUCKET, {
         public: false,
         fileSizeLimit: 5 * 1024 * 1024,
       });
-      // Concurrent creates can race; "already exists" is fine.
-      if (createError && !/already exists|duplicate/i.test(createError.message)) {
+      // Already exists (or concurrent create) is success for our purposes.
+      if (createError && !/already exists|duplicate|exists/i.test(createError.message)) {
         throw new Error(`Supabase create bucket failed: ${createError.message}`);
       }
     })().catch((err) => {
@@ -74,26 +71,23 @@ async function ensureFilesBucket() {
 }
 
 async function putSupabase(key: string, data: Buffer | string, contentType: string) {
-  await ensureFilesBucket();
   const supabase = getSupabaseAdmin();
   const body = typeof data === "string" ? Buffer.from(data, "utf8") : data;
-  const { error } = await supabase.storage.from(SUPABASE_FILES_BUCKET).upload(key, body, {
+  const first = await supabase.storage.from(SUPABASE_FILES_BUCKET).upload(key, body, {
     upsert: true,
     contentType,
   });
-  if (error) {
-    if (/bucket not found/i.test(error.message)) {
-      filesBucketReady = null;
-      await ensureFilesBucket();
-      const retry = await supabase.storage.from(SUPABASE_FILES_BUCKET).upload(key, body, {
-        upsert: true,
-        contentType,
-      });
-      if (!retry.error) return;
-      throw new Error(`Supabase file upload failed: ${retry.error.message}`);
-    }
-    throw new Error(`Supabase file upload failed: ${error.message}`);
+  if (!first.error) return;
+  if (!/bucket not found/i.test(first.error.message)) {
+    throw new Error(`Supabase file upload failed: ${first.error.message}`);
   }
+  filesBucketReady = null;
+  await ensureFilesBucket();
+  const retry = await supabase.storage.from(SUPABASE_FILES_BUCKET).upload(key, body, {
+    upsert: true,
+    contentType,
+  });
+  if (retry.error) throw new Error(`Supabase file upload failed: ${retry.error.message}`);
 }
 
 async function getSupabaseObject(key: string): Promise<Buffer | undefined> {

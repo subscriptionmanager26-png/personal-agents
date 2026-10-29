@@ -3,6 +3,7 @@ import { handleUpload } from "@/lib/file-routes";
 import { fileView, listFiles } from "@/lib/files";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 120;
 
 type Params = { params: Promise<{ userId: string }> };
 
