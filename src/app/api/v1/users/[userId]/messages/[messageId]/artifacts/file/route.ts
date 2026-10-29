@@ -62,16 +62,26 @@ export async function GET(
 
   try {
     const key = (await runtimeForUserId(job.ownerUserId)).cursorApiKey;
-    const { url } = await getArtifactDownloadUrl(key, job.cursorAgentId, path);
+    const { url, expiresAt } = await getArtifactDownloadUrl(key, job.cursorAgentId, path);
     if (asText) {
-      const res = await fetch(url, { cache: "no-store" });
+      const res = await fetch(url, { cache: "no-store", signal: AbortSignal.timeout(20_000) });
       if (!res.ok) throw new Error(`Artifact fetch failed (${res.status})`);
       return textResponse(await res.text());
     }
-    return new Response(null, {
-      status: 302,
-      headers: { Location: url, "Cache-Control": "private, no-store" },
-    });
+    // Presigned S3 URL (15 min). Prefer JSON so BFFs can hand it to the browser
+    // without proxying bytes through Vercel.
+    const name = path.split("/").pop() || "download";
+    const wantsRedirect = new URL(request.url).searchParams.get("mode") === "redirect";
+    if (wantsRedirect) {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: url, "Cache-Control": "private, no-store" },
+      });
+    }
+    return Response.json(
+      { url, expiresAt, name },
+      { headers: { "Cache-Control": "private, no-store" } },
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return apiError(502, "artifact_fetch_failed", message.slice(0, 200));
