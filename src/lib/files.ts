@@ -261,8 +261,18 @@ export async function uploadFile(input: {
     status: "needsPassword" in extracted ? "needs_password" : "ready",
     createdAt: new Date().toISOString(),
   };
-  await putObject(fileKey(file.ownerUserId, file.id, "raw"), input.bytes, file.mimeType);
-  if ("extract" in extracted) await saveExtract(file, extracted);
+  try {
+    await putObject(fileKey(file.ownerUserId, file.id, "raw"), input.bytes, file.mimeType);
+    if ("extract" in extracted) await saveExtract(file, extracted);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "File storage failed.";
+    return {
+      error: /bucket|storage|not configured/i.test(message)
+        ? `File storage is not ready (${message}).`
+        : message,
+      code: 503,
+    };
+  }
 
   await updateStore((store) => {
     const list = store.files[file.ownerUserId] ?? [];
