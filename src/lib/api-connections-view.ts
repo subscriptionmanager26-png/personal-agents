@@ -20,11 +20,12 @@ export async function apiConnectionsView(ownerUserId: string): Promise<ApiConnec
   ]);
   let loggedInAs: string | null = null;
   if (kiteConn) {
-    try {
-      loggedInAs = (await kiteLoggedInAs(ownerUserId)) ?? null;
-    } catch {
-      loggedInAs = null;
-    }
+    // Same as studio connections page — don't hang the whole status on a slow MCP probe.
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 8_000));
+    loggedInAs = await Promise.race([
+      kiteLoggedInAs(ownerUserId).catch(() => null),
+      timeout,
+    ]);
   }
   return {
     zerodha: {
