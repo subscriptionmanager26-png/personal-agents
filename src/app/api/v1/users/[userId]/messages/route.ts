@@ -57,11 +57,25 @@ export async function POST(request: Request, { params }: Params) {
     return apiError(400, "invalid_thread_id", "threadId required: 1-64 of letters, digits, . _ : -");
   }
 
+  const clientSendId =
+    typeof body?.clientSendId === "string"
+      ? body.clientSendId.trim()
+      : typeof body?.idempotencyKey === "string"
+        ? body.idempotencyKey.trim()
+        : "";
+
   try {
-    const { job } = await enqueueChat({ user: auth.user, text, threadId, source: "api", attachments: body?.attachments });
+    const { job, reused } = await enqueueChat({
+      user: auth.user,
+      text,
+      threadId,
+      source: "api",
+      attachments: body?.attachments,
+      clientSendId: clientSendId || undefined,
+    });
     const base = `/api/v1/users/${encodeURIComponent(auth.externalId)}/messages/${job.id}`;
     return Response.json(
-      { message: messageView(job), links: { self: base, events: `${base}/events` } },
+      { message: messageView(job), links: { self: base, events: `${base}/events` }, reused: Boolean(reused) },
       { status: 202 },
     );
   } catch (error) {

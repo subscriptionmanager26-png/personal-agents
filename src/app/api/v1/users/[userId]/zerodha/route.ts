@@ -2,6 +2,7 @@ import { apiError, readJson, requireApiUser } from "@/lib/api-auth";
 import { connectKite, disconnectKite, kiteLogin } from "@/lib/kite";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 type Params = { params: Promise<{ userId: string }> };
 
@@ -13,8 +14,7 @@ export async function POST(request: Request, { params }: Params) {
   const action = typeof body?.action === "string" ? body.action : "";
 
   if (action === "connect") {
-    // Same as the studio connections form: enable Kite, then start login so the
-    // client gets a Zerodha URL to open (connect alone used to return { ok: true }).
+    // Enable Kite row, then open MCP session + login URL in one shot.
     await connectKite(auth.user.id);
     try {
       const login = await kiteLogin(auth.user.id);
@@ -22,6 +22,7 @@ export async function POST(request: Request, { params }: Params) {
       return Response.json({ ok: true, loggedInAs: login.loggedInAs });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not start Zerodha login.";
+      console.error("[zerodha] connect/login failed", { userId: auth.user.id, message });
       return apiError(502, "zerodha_login_failed", message);
     }
   }

@@ -250,13 +250,13 @@ export async function reconcileJob(job: Job): Promise<Job> {
     if (ageMs > 30 * 60_000) {
       await patchJob(job.id, job.ownerUserId, {
         status: "error",
-        error: "Agent never started. Please send your message again.",
+        error: "No reply was started for this message (timed out before the agent ran). Send it again.",
       });
       return (await getJob(job.id, { fresh: true })) ?? job;
     }
     if (ageMs > 90_000 && !job.cursorRunId) {
-      // Prefer reclaiming a Cursor run already created for this job (lost patch)
-      // over createRun — that was how ghost conversation turns appeared.
+      // Reclaim only — never call dispatchJob from reconcile. Re-dispatch from
+      // list/poll created duplicate Cursor agents and ghost user turns.
       const agentId = await resolveCursorAgentId(job).catch(() => undefined);
       if (agentId) {
         const bound = await ensureJobRunBinding(job, agentId).catch(() => undefined);
@@ -265,10 +265,6 @@ export async function reconcileJob(job: Job): Promise<Job> {
           return (await getJob(job.id, { fresh: true })) ?? bound;
         }
       }
-      const { getUser } = await import("@/lib/users");
-      const { dispatchJob } = await import("@/lib/cursor");
-      const user = await getUser(job.ownerUserId);
-      if (user) await dispatchJob(user, job).catch(() => undefined);
       return (await getJob(job.id, { fresh: true })) ?? job;
     }
   }

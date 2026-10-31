@@ -82,6 +82,59 @@ export async function appendStreamEvents(jobId: string, ownerUserId: string, eve
   });
 }
 
+/** Find a recent job with the same client send id (idempotent enqueue). */
+export async function findJobByClientSendId(input: {
+  ownerUserId: string;
+  source: JobSource;
+  webThreadId: string;
+  clientSendId: string;
+}): Promise<Job | undefined> {
+  const store = await getStoreFresh();
+  const needle = input.clientSendId.trim();
+  if (!needle) return undefined;
+  for (const job of sortedJobsForUser(store, input.ownerUserId)) {
+    if (job.source !== input.source) continue;
+    if ((job.webThreadId ?? "main") !== input.webThreadId) continue;
+    if (job.clientSendId === needle) return job;
+  }
+  return undefined;
+}
+
+const DISPATCH_CLAIM_TTL_MS = 4 * 60_000;
+
+/**
+ * Atomically claim Cursor dispatch for a job. Concurrent callers get busy /
+ * already_dispatched so we never double createAgent/createRun for one send.
+ */
+export async function claimJobDispatch(
+  jobId: string,
+  ownerUserId: string,
+): Promise<"claimed" | "already_dispatched" | "busy" | "missing"> {
+  return updateStore((store) => {
+    const job = store.jobs.find((j) => j.id === jobId && j.ownerUserId === ownerUserId);
+    if (!job) return "missing";
+    if (
+      job.cursorRunId ||
+      job.status === "dispatched" ||
+      job.status === "delivering" ||
+      job.status === "replied"
+    ) {
+      return "already_dispatched";
+    }
+    if (job.dispatchClaimedAt) {
+      const age = Date.now() - Date.parse(job.dispatchClaimedAt);
+      if (Number.isFinite(age) && age >= 0 && age < DISPATCH_CLAIM_TTL_MS) {
+        return "busy";
+      }
+    }
+    const now = new Date().toISOString();
+    job.dispatchClaimedAt = now;
+    job.updatedAt = now;
+    void upsertJobRow(job).catch(() => undefined);
+    return "claimed";
+  });
+}
+
 export async function createJob(input: {
   ownerUserId: string;
   source?: JobSource;
@@ -89,6 +142,7 @@ export async function createJob(input: {
   attachments?: JobAttachment[];
   threadContext?: string;
   webThreadId?: string;
+  clientSendId?: string;
   slackTeamId?: string;
   slackChannelId?: string;
   slackThreadTs?: string;
@@ -99,6 +153,7 @@ export async function createJob(input: {
   const source = input.source || (input.slackChannelId ? "slack" : "web");
   const webThreadId =
     input.webThreadId || (source !== "slack" ? "main" : undefined);
+  const clientSendId = input.clientSendId?.trim() || undefined;
 
   const job: Job = {
     id: randomId("job"),
@@ -115,6 +170,7 @@ export async function createJob(input: {
     prompt: input.prompt,
     attachments: input.attachments?.length ? input.attachments : undefined,
     threadContext: input.threadContext,
+    clientSendId,
     status: "queued",
     events: [{ at: now, type: "created", detail: "Job created" }],
     stream: [{ seq: 1, at: now, type: "status", label: "Queued" }],

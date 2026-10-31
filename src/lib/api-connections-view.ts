@@ -20,8 +20,8 @@ export async function apiConnectionsView(ownerUserId: string): Promise<ApiConnec
   ]);
   let loggedInAs: string | null = null;
   if (kiteConn) {
-    // Same as studio connections page — don't hang the whole status on a slow MCP probe.
-    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 8_000));
+    // Don't hang the whole status on a slow MCP probe (PA↔Kite can be cross-region).
+    const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 15_000));
     loggedInAs =
       (await Promise.race([kiteLoggedInAs(ownerUserId).catch(() => null), timeout])) ?? null;
   }

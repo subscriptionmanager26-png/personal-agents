@@ -1,7 +1,7 @@
 import { after } from "next/server";
 
 import { dispatchJob } from "@/lib/cursor";
-import { createJob, patchJob } from "@/lib/jobs";
+import { createJob, findJobByClientSendId, patchJob } from "@/lib/jobs";
 import { releaseThreadForNewMessage } from "@/lib/settle";
 import { resolveAttachments } from "@/lib/files";
 import { ensurePersonalRepo } from "@/lib/github";
@@ -27,6 +27,8 @@ export async function enqueueChat(input: {
   source: Exclude<JobSource, "slack">;
   /** Ids of the user's uploaded files. */
   attachments?: unknown;
+  /** Client idempotency key — retries reuse the same job. */
+  clientSendId?: string;
 }) {
   const resolved = await resolveAttachments(input.user.id, input.attachments);
   if ("error" in resolved) throw new ChatRejected(resolved.error, "invalid");
@@ -44,6 +46,35 @@ export async function enqueueChat(input: {
     );
   }
   const threadId = input.threadId || "main";
+  const clientSendId = typeof input.clientSendId === "string" ? input.clientSendId.trim() : "";
+
+  if (clientSendId) {
+    const existing = await findJobByClientSendId({
+      ownerUserId: input.user.id,
+      source: input.source,
+      webThreadId: threadId,
+      clientSendId,
+    });
+    if (existing) {
+      // Ensure dispatch still runs if the first attempt died before after().
+      if (!existing.cursorRunId && existing.status === "queued") {
+        after(async () => {
+          try {
+            await dispatchJob(input.user, existing);
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            await patchJob(existing.id, input.user.id, {
+              status: "error",
+              error: detail,
+              event: { type: "error", detail },
+            });
+          }
+        });
+      }
+      return { job: existing, user: input.user, reused: true as const };
+    }
+  }
+
   await releaseThreadForNewMessage(input.user.id, input.source, threadId);
 
   let user = input.user;
@@ -60,6 +91,7 @@ export async function enqueueChat(input: {
     source: input.source,
     webThreadId: threadId,
     prompt: text,
+    clientSendId: clientSendId || undefined,
     attachments: resolved.files.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
   });
 
@@ -76,7 +108,7 @@ export async function enqueueChat(input: {
     }
   });
 
-  return { job, user };
+  return { job, user, reused: false as const };
 }
 
 export async function enqueueWebChat(input: {

@@ -182,7 +182,8 @@ export async function recoverBusyAgentForNewRun(
     // continue with retries
   }
 
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  // Keep retries low — each successful createRun is another Cursor user turn.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     const retry = await createRun(token, agentId, promptText, mcpServers);
     const runId = extractRunId(retry.body);
     if (runId) return { runId, status: retry.status, body: retry.body, mode: "run" };
@@ -190,6 +191,7 @@ export async function recoverBusyAgentForNewRun(
     await sleep(1500);
   }
 
+  // Steer only as last resort; still one delivery of this prompt for the job.
   const steer = await cursorPost<{ delivery?: string; runId?: string }>(token, `/v1/agents/${agentId}/runs`, {
     prompt: { text: promptText },
     delivery: "steer",

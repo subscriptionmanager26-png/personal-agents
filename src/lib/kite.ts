@@ -1,6 +1,6 @@
 import { decryptSecret, encryptSecret, randomId } from "@/lib/crypto";
 import type { McpTool, ToolResult } from "@/lib/mcp-server";
-import { getStore, updateStore } from "@/lib/store";
+import { getStoreFresh, updateStore } from "@/lib/store";
 import type { McpConnection } from "@/lib/types";
 import { appendAudit } from "@/lib/users";
 
@@ -14,7 +14,12 @@ const PURPOSE = "kite-mcp-session";
 const PROTOCOL = "2025-03-26";
 /** Kite expires sessions 12 hours after they open; start a fresh one a little earlier. */
 const SESSION_MAX_MS = 11 * 3600_000;
-const LOGIN_HOSTS = new Set(["kite.zerodha.com", "kite.trade", "mcp.kite.trade"]);
+const LOGIN_HOSTS = new Set([
+  "kite.zerodha.com",
+  "kite.trade",
+  "mcp.kite.trade",
+  "www.kite.trade",
+]);
 
 /** Tools that place, change or cancel orders. Trades go through propose_order and the client's confirmation. */
 export const KITE_BLOCKED_TOOLS = new Set([
@@ -80,7 +85,8 @@ function findKite(list: McpConnection[] | undefined, ownerUserId: string) {
 }
 
 export async function getKiteConnection(ownerUserId: string) {
-  const store = await getStore();
+  // Fresh read — cached getStore() could miss a connect that just wrote on another isolate.
+  const store = await getStoreFresh();
   return findKite(store.connections[ownerUserId], ownerUserId);
 }
 
@@ -171,14 +177,36 @@ function safeKiteLoginUrl(raw: string | undefined) {
   }
 }
 
+/** Extract a Kite authorize / login URL from MCP login tool text. */
+function extractKiteLoginUrl(text: string): string | undefined {
+  const candidates = [
+    text.match(/\]\((https:\/\/mcp\.kite\.trade\/authorize[^)\s]*)\)/i)?.[1],
+    text.match(/https:\/\/mcp\.kite\.trade\/authorize[^\s)\]"'<>]+/i)?.[0],
+    text.match(/\]\((https:[^)\s]+)\)/)?.[1],
+    text.match(/https:\/\/[^\s)\]"'<>]+/i)?.[0],
+  ];
+  for (const raw of candidates) {
+    const cleaned = raw?.replace(/[.,;]+$/, "");
+    const url = safeKiteLoginUrl(cleaned);
+    if (url) return url;
+  }
+  return undefined;
+}
+
 /** Zerodha's login link for this client's session, or who is already logged in. */
 export async function kiteLogin(ownerUserId: string): Promise<{ loggedInAs: string } | { url: string }> {
   const result = await kiteCall(ownerUserId, "login");
   const text = toolResultText(result);
   const already = text.match(/already logged in as (.+)$/im);
   if (already) return { loggedInAs: already[1].trim() };
-  const url = safeKiteLoginUrl(text.match(/\]\((https:[^)\s]+)\)/)?.[1] ?? text.match(/https:\/\/\S+/)?.[0]);
-  if (result.isError || !url) throw new Error("Zerodha did not return a login link. Try again in a minute.");
+  const url = extractKiteLoginUrl(text);
+  if (!url) {
+    console.error("[kite] login tool returned no usable URL", {
+      isError: result.isError,
+      preview: text.slice(0, 240),
+    });
+    throw new Error("Zerodha did not return a login link. Try again in a minute.");
+  }
   return { url };
 }
 

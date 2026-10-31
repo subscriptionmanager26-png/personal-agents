@@ -266,7 +266,14 @@ export type Job = {
   /** The client's uploaded files attached to this message, as they were when sent. */
   attachments?: JobAttachment[];
   threadContext?: string;
+  /**
+   * Client-generated idempotency key for this send (thread-scoped).
+   * Retries with the same key reuse this job instead of creating another.
+   */
+  clientSendId?: string;
   status: JobStatus;
+  /** When set, a worker has claimed Cursor dispatch for this job (TTL in claimJobDispatch). */
+  dispatchClaimedAt?: string;
   cursorAgentId?: string;
   /** v1 run id for this job; used for the live trace stream and run result. */
   cursorRunId?: string;
@@ -304,6 +311,9 @@ export type WebThread = {
   title: string;
   cursorAgentId?: string;
   cursorAgentSkillsHash?: string;
+  /** Set while createAgent is in flight so concurrent dispatches wait instead of minting a second agent. */
+  agentCreateLockAt?: string;
+  agentCreateLockJobId?: string;
   /** True while any job on this thread is queued/dispatched/delivering. */
   working?: boolean;
   createdAt: string;

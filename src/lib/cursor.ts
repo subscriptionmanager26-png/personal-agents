@@ -15,7 +15,7 @@ import {
   type McpServerDef,
 } from "@/lib/cursor-api";
 import { ensurePersonalRepo, syncWorkspaceSkills } from "@/lib/github";
-import { getJob, patchJob, sortedJobsForUser } from "@/lib/jobs";
+import { claimJobDispatch, getJob, patchJob, sortedJobsForUser } from "@/lib/jobs";
 import { getKiteConnection, KITE_MCP_NAME } from "@/lib/kite";
 import { mockRunId } from "@/lib/mock-trace";
 import { buildPersonalAgentPrompt } from "@/lib/prompt";
@@ -24,7 +24,14 @@ import { createMemoryToken } from "@/lib/run-token";
 import { runtimeFor, runtimeForUserId, type AgentRuntime } from "@/lib/runtime";
 import { getStoreFresh } from "@/lib/store";
 import { createVaultJobToken, listVaultLabels } from "@/lib/vault";
-import { agentBindingForJob, mockAgentIdForJob, saveAgentBindingForJob } from "@/lib/thread-agents";
+import {
+  agentBindingForJob,
+  beginThreadAgentCreate,
+  clearThreadAgentCreateLock,
+  mockAgentIdForJob,
+  saveAgentBindingForJob,
+  waitForThreadAgent,
+} from "@/lib/thread-agents";
 import { getUser } from "@/lib/users";
 import { canUseAgent, getWorkspace, skillsHash } from "@/lib/workspaces";
 import type { Job, PersonalUser, Workspace } from "@/lib/types";
@@ -121,6 +128,92 @@ async function buildMcpServers(
   };
 }
 
+async function attachRunToJob(
+  job: Job,
+  ownerUserId: string,
+  agentId: string,
+  runId: string,
+  runStatus: number,
+  runBody: unknown,
+  detail: string,
+) {
+  await patchJob(job.id, ownerUserId, {
+    status: "dispatched",
+    cursorAgentId: agentId,
+    cursorRunId: runId,
+    cursorHttpStatus: runStatus,
+    cursorBody: runBody,
+    event: { type: "dispatch", detail },
+  });
+}
+
+/** Follow-up on an existing thread agent — never createAgent here. */
+async function dispatchOnExistingAgent(
+  job: Job,
+  current: PersonalUser,
+  agentId: string,
+  hash: string,
+  promptText: string,
+  mcpServers: McpServerDef[],
+  cursorApiKey: string,
+) {
+  const fresh = (await getJob(job.id, { fresh: true })) ?? job;
+  if (fresh.cursorRunId) {
+    return { user: current, agentId, mock: false as const };
+  }
+
+  const existing = await ensureJobRunBinding(fresh, agentId).catch(() => undefined);
+  if (existing?.cursorRunId) {
+    await saveAgentBindingForJob(job, agentId, hash).catch(() => undefined);
+    return { user: current, agentId, mock: false as const };
+  }
+
+  const run = await createRun(cursorApiKey, agentId, promptText, mcpServers);
+  let runId = extractRunId(run.body);
+  let runStatus = run.status;
+  let runBody = run.body;
+  let dispatchDetail = `New run on agent ${agentId}`;
+
+  if (!runId && run.status === 409) {
+    // Reclaim again before recovery creates another turn.
+    const rebound = await ensureJobRunBinding(
+      (await getJob(job.id, { fresh: true })) ?? job,
+      agentId,
+    ).catch(() => undefined);
+    if (rebound?.cursorRunId) {
+      await saveAgentBindingForJob(job, agentId, hash).catch(() => undefined);
+      return { user: current, agentId, mock: false as const };
+    }
+    const recovered = await recoverBusyAgentForNewRun(cursorApiKey, agentId, promptText, mcpServers);
+    if (recovered) {
+      runId = recovered.runId;
+      runStatus = recovered.status;
+      runBody = recovered.body;
+      dispatchDetail =
+        recovered.mode === "steer" ? `Steered agent ${agentId}` : `New run on agent ${agentId} (after 409)`;
+    }
+  }
+
+  if (runId) {
+    await attachRunToJob(job, current.id, agentId, runId, runStatus, runBody, dispatchDetail);
+    await saveAgentBindingForJob(job, agentId, hash).catch(() => undefined);
+    return { user: current, agentId, mock: false as const };
+  }
+
+  // Agent gone (404) — clear binding so caller may create once. Other failures stay failed.
+  if (run.status === 404) {
+    console.warn("[dispatch] thread agent missing; will recreate", { jobId: job.id, agentId });
+    return { user: current, agentId: undefined, mock: false as const, agentGone: true as const };
+  }
+
+  await failJob(
+    job,
+    current.id,
+    `Could not start a run on the thread agent (HTTP ${run.status}). Please send again.`,
+  );
+  return { user: current, agentId, mock: false as const };
+}
+
 export async function dispatchJob(user: PersonalUser, job: Job) {
   const latest = (await getUser(user.id)) ?? user;
   if (!canUseAgent(latest)) {
@@ -133,6 +226,36 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     );
     return { user: latest, agentId: undefined, mock: false };
   }
+
+  const freshStart = (await getJob(job.id, { fresh: true })) ?? job;
+  if (freshStart.cursorRunId) {
+    return { user: latest, agentId: freshStart.cursorAgentId, mock: false };
+  }
+
+  const claim = await claimJobDispatch(job.id, latest.id);
+  if (claim === "missing") {
+    return { user: latest, agentId: undefined, mock: false };
+  }
+  if (claim === "already_dispatched") {
+    const row = (await getJob(job.id, { fresh: true })) ?? job;
+    return { user: latest, agentId: row.cursorAgentId, mock: false };
+  }
+  if (claim === "busy") {
+    // Another worker owns createAgent/createRun — only reclaim, never mint.
+    const binding = await agentBindingForJob(job, latest);
+    if (binding.agentId) {
+      const bound = await ensureJobRunBinding(
+        (await getJob(job.id, { fresh: true })) ?? job,
+        binding.agentId,
+      ).catch(() => undefined);
+      if (bound?.cursorRunId) {
+        return { user: latest, agentId: binding.agentId, mock: false };
+      }
+    }
+    console.warn("[dispatch] skip concurrent dispatch", { jobId: job.id });
+    return { user: latest, agentId: binding.agentId, mock: false };
+  }
+
   const workspace = await getWorkspace(latest.workspaceId);
   const rt = runtimeFor(workspace);
 
@@ -185,76 +308,88 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     connections: mcp.connections,
   });
 
-  // One Cursor agent per chat thread; replace only when skills or repo mode changed.
-  const binding = await agentBindingForJob(job, current);
-  if (binding.agentId && binding.skillsHash === hash) {
+  // Prefer the standing thread agent. skillsHash mismatch no longer forces a new agent.
+  let binding = await agentBindingForJob(job, current);
+  if (binding.agentId) {
     const { reconcileActiveJobsInThread } = await import("@/lib/settle");
     await reconcileActiveJobsInThread(current.id, job.source ?? "web", job.webThreadId ?? "main");
 
-    // If this job already produced a Cursor run (patch lost / re-dispatch), bind it —
-    // never create a second run for the same user message ("ghost" conversation turn).
-    const existing = await ensureJobRunBinding(job, binding.agentId).catch(() => undefined);
-    if (existing?.cursorRunId) {
-      return { user: current, agentId: binding.agentId, mock: false };
+    const onExisting = await dispatchOnExistingAgent(
+      job,
+      current,
+      binding.agentId,
+      hash,
+      promptText,
+      mcp.servers,
+      rt.cursorApiKey,
+    );
+    if (!("agentGone" in onExisting && onExisting.agentGone)) {
+      return onExisting;
     }
-
-    const run = await createRun(rt.cursorApiKey, binding.agentId, promptText, mcp.servers);
-    let runId = extractRunId(run.body);
-    let runStatus = run.status;
-    let runBody = run.body;
-    let dispatchDetail = `New run on agent ${binding.agentId}`;
-
-    if (!runId && run.status === 409) {
-      const recovered = await recoverBusyAgentForNewRun(
-        rt.cursorApiKey,
-        binding.agentId,
-        promptText,
-        mcp.servers,
-      );
-      if (recovered) {
-        runId = recovered.runId;
-        runStatus = recovered.status;
-        runBody = recovered.body;
-        dispatchDetail =
-          recovered.mode === "steer"
-            ? `Steered agent ${binding.agentId}`
-            : `New run on agent ${binding.agentId} (after 409)`;
-      }
-    }
-
-    if (runId) {
-      await patchJob(job.id, current.id, {
-        status: "dispatched",
-        cursorAgentId: binding.agentId,
-        cursorRunId: runId,
-        cursorHttpStatus: runStatus,
-        cursorBody: runBody,
-        event: { type: "dispatch", detail: dispatchDetail },
-      });
-      return { user: current, agentId: binding.agentId, mock: false };
-    }
-    // Agent expired or was removed: start a fresh one below.
+    // Agent 404 — fall through to create under thread lock.
+    binding = {};
   }
 
-  const created = await createAgent(
-    rt.cursorApiKey,
-    withRepo ? current : undefined,
-    promptText,
-    mcp.servers,
-  );
-  // Persist the job↔run binding BEFORE the thread agent ref. If the process dies
-  // after Cursor creates the agent but before both writes, a later re-dispatch
-  // must be able to reclaim the existing run instead of creating a ghost turn.
-  await patchJob(job.id, current.id, {
-    status: "dispatched",
-    cursorAgentId: created.agentId,
-    cursorRunId: created.runId,
-    cursorHttpStatus: created.status,
-    cursorBody: created.body,
-    event: { type: "dispatch", detail: `Created agent ${created.agentId}` },
-  });
-  await saveAgentBindingForJob(job, created.agentId, hash);
-  return { user: current, agentId: created.agentId, mock: false };
+  const gate = await beginThreadAgentCreate(job, current);
+  if (gate.mode === "wait") {
+    const waited = await waitForThreadAgent(job);
+    if (waited.agentId) {
+      return dispatchOnExistingAgent(
+        job,
+        current,
+        waited.agentId,
+        hash,
+        promptText,
+        mcp.servers,
+        rt.cursorApiKey,
+      );
+    }
+  }
+  if (gate.mode === "reuse" && gate.agentId) {
+    return dispatchOnExistingAgent(
+      job,
+      current,
+      gate.agentId,
+      hash,
+      promptText,
+      mcp.servers,
+      rt.cursorApiKey,
+    );
+  }
+
+  try {
+    // First message on this thread: createAgent carries the user prompt (one Cursor turn).
+    // Do NOT also createRun for this job — that was how duplicate user messages appeared.
+    const created = await createAgent(
+      rt.cursorApiKey,
+      withRepo ? current : undefined,
+      promptText,
+      mcp.servers,
+    );
+    console.info("[dispatch] createAgent", {
+      jobId: job.id,
+      threadId: job.webThreadId ?? "main",
+      agentId: created.agentId,
+      runId: created.runId,
+    });
+    await patchJob(job.id, current.id, {
+      status: "dispatched",
+      cursorAgentId: created.agentId,
+      cursorRunId: created.runId,
+      cursorHttpStatus: created.status,
+      cursorBody: created.body,
+      event: { type: "dispatch", detail: `Created agent ${created.agentId}` },
+    });
+    if (!created.runId) {
+      await ensureJobRunBinding((await getJob(job.id, { fresh: true })) ?? job, created.agentId).catch(
+        () => undefined,
+      );
+    }
+    await saveAgentBindingForJob(job, created.agentId, hash);
+    return { user: current, agentId: created.agentId, mock: false };
+  } finally {
+    await clearThreadAgentCreateLock(job).catch(() => undefined);
+  }
 }
 
 /**

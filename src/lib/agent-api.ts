@@ -129,11 +129,8 @@ function safeMessageView(job: Job): MessageView {
   }
 }
 
-const ACTIVE_MESSAGE = new Set(["queued", "dispatched", "delivering"]);
-
 export async function listMessages(ownerUserId: string, opts: { threadId?: string; limit?: number; source: Job["source"] }) {
   const limit = Math.min(Math.max(opts.limit ?? 20, 1), 100);
-  const { reconcileJob } = await import("@/lib/settle");
   const {
     listJobRowsForThread,
     listJobRowsForUser,
@@ -164,13 +161,10 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
     }
   }
 
-  const out: MessageView[] = [];
-  for (const job of candidates) {
-    // List path: only poll Cursor for still-active jobs. Heal / ensureFullReply
-    // belongs on single-message GET — never block chat open on Cursor.
-    const row = ACTIVE_MESSAGE.has(job.status) ? await reconcileJob(job) : job;
-    out.push(safeMessageView(row));
-  }
+  // Snapshot only — never await Cursor reconcile/dispatch here. That blocked
+  // chat-state open for minutes when a queued job re-entered dispatchJob.
+  // Healing belongs on single-message GET / events stream / poll.
+  const out: MessageView[] = candidates.map((job) => safeMessageView(job));
   // Sort by creation time when serving a thread.
   // patchJob always updates `updatedAt` (e.g. during healing), which breaks insertion order
   // if we relied on sortedJobsForUser's updatedAt-based sort.
