@@ -157,6 +157,53 @@ export async function upsertJobRow(job: Job): Promise<void> {
   await trimUserJobs(job.ownerUserId).catch(() => undefined);
 }
 
+/** O(1) read of one owner's sharded user row (no full-store assemble). */
+export async function readUserProfileRow(ownerUserId: string): Promise<PersonalUser | null> {
+  if (!supabaseStoreConfigured()) return null;
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", userRowId(ownerUserId))
+    .maybeSingle();
+  if (error) throw error;
+  const row = data?.data as StoredUser | undefined;
+  if (!row || row.kind !== "user") return null;
+  return row.userProfile ?? null;
+}
+
+/**
+ * Upsert one owner's profile into `pa:u:…` only — preserves files/memories/etc.
+ * Used for API user lastSeen/name/email touches so PUT /users does not rewrite the whole store.
+ */
+export async function upsertUserProfileRow(user: PersonalUser): Promise<void> {
+  if (!supabaseStoreConfigured()) {
+    throw new Error("Supabase store is not configured for user-row upsert.");
+  }
+  const supabase = getSupabaseAdmin();
+  const rowId = userRowId(user.id);
+  const { data: existing, error: readErr } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", rowId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+  const prev = existing?.data as StoredUser | undefined;
+  const payload: StoredUser = {
+    kind: "user",
+    ownerUserId: user.id,
+    userProfile: user,
+    files: prev?.kind === "user" ? (prev.files ?? []) : [],
+    memories: prev?.kind === "user" ? (prev.memories ?? []) : [],
+    vaultItems: prev?.kind === "user" ? (prev.vaultItems ?? []) : [],
+    connections: prev?.kind === "user" ? (prev.connections ?? []) : [],
+    orders: prev?.kind === "user" ? (prev.orders ?? []) : [],
+    slackThreads: prev?.kind === "user" ? (prev.slackThreads ?? {}) : {},
+  };
+  const error = await upsertRow(rowId, payload, user.updatedAt || new Date().toISOString());
+  if (error) throw error;
+}
+
 /** O(1) read of workspace map for API-key auth (no users/jobs/threads assemble). */
 export async function readGlobalWorkspaces(): Promise<Record<string, Workspace> | null> {
   if (!supabaseStoreConfigured()) return null;

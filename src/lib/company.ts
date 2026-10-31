@@ -5,6 +5,11 @@ import { SignJWT, decodeJwt, jwtVerify } from "jose";
 import { decryptSecret, encryptSecret, randomId, sha256 } from "@/lib/crypto";
 import type { McpServerDef } from "@/lib/cursor-api";
 import { getStore, updateStore } from "@/lib/store";
+import {
+  dualWriteRelationalEnabled,
+  readUserProfileRow,
+  upsertUserProfileRow,
+} from "@/lib/store-relational";
 import type { ApiKey, CompanyServer, PersonalUser, Workspace } from "@/lib/types";
 import { appendAudit, publicUser } from "@/lib/users";
 import { normalizeMcpUrl, slugify } from "@/lib/workspaces";
@@ -260,8 +265,18 @@ export function apiUserId(workspaceId: string, externalId: string) {
 
 export async function getApiUser(workspace: Workspace, externalId: string) {
   if (!isValidExternalId(externalId)) return undefined;
+  const id = apiUserId(workspace.id, externalId);
+  if (dualWriteRelationalEnabled()) {
+    try {
+      const profile = await readUserProfileRow(id);
+      if (profile && profile.workspaceId === workspace.id) return publicUser(profile);
+      if (profile) return undefined;
+    } catch (error) {
+      console.error("[getApiUser] light read failed; falling back to getStore", error);
+    }
+  }
   const store = await getStore();
-  const user = store.users[apiUserId(workspace.id, externalId)];
+  const user = store.users[id];
   return user && user.workspaceId === workspace.id ? publicUser(user) : undefined;
 }
 
@@ -275,6 +290,31 @@ export async function upsertApiUser(
   const now = new Date().toISOString();
   const name = input.name?.trim().slice(0, 80) || undefined;
   const email = input.email?.trim().toLowerCase().slice(0, 200) || undefined;
+
+  // Fast path: existing user → single pa:u row write (no full-store rewrite).
+  if (dualWriteRelationalEnabled()) {
+    try {
+      const existing =
+        (await readUserProfileRow(id)) ??
+        (await getStore().then((s) => s.users[id]));
+      if (existing) {
+        if (existing.workspaceId !== workspace.id) return undefined;
+        const next: PersonalUser = {
+          ...existing,
+          displayName: name ?? existing.displayName,
+          email: email ?? existing.email,
+          membershipStatus: "active",
+          updatedAt: now,
+          lastSeenAt: now,
+        };
+        await upsertUserProfileRow(next);
+        return { user: publicUser(next), created: false };
+      }
+    } catch (error) {
+      console.error("[upsertApiUser] light path failed; falling back to updateStore", error);
+    }
+  }
+
   const result = await updateStore((store) => {
     const existing = store.users[id];
     if (existing) {
