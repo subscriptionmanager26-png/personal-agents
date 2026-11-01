@@ -22,12 +22,26 @@ export async function GET(request: Request, { params }: Params) {
     const url = new URL(request.url);
     const threadId = url.searchParams.get("threadId") || undefined;
     if (threadId && !isValidThreadId(threadId)) return apiError(400, "invalid_thread_id", "Invalid threadId.");
+    const clientSendId = url.searchParams.get("clientSendId")?.trim() || undefined;
     const listStart = Date.now();
-    const messages = await listMessages(auth.ownerUserId, {
+    let messages = await listMessages(auth.ownerUserId, {
       threadId,
       limit: Number(url.searchParams.get("limit")) || undefined,
       source: "api",
     });
+    if (clientSendId) {
+      messages = messages.filter((m) => m.clientSendId === clientSendId);
+      if (!messages.length && threadId) {
+        const { findJobByClientSendId } = await import("@/lib/jobs");
+        const job = await findJobByClientSendId({
+          ownerUserId: auth.ownerUserId,
+          source: "api",
+          webThreadId: threadId,
+          clientSendId,
+        });
+        if (job) messages = [messageView(job)];
+      }
+    }
     listMs = Date.now() - listStart;
     return Response.json(
       { messages },
@@ -57,12 +71,17 @@ export async function POST(request: Request, { params }: Params) {
     return apiError(400, "invalid_thread_id", "threadId required: 1-64 of letters, digits, . _ : -");
   }
 
+  const idempotencyHeader = request.headers.get("idempotency-key")?.trim() || "";
+  // Prefer body clientSendId; Idempotency-Key may be `threadId:clientSendId`.
+  const fromHeader = idempotencyHeader.includes(":")
+    ? idempotencyHeader.slice(idempotencyHeader.indexOf(":") + 1).trim()
+    : idempotencyHeader;
   const clientSendId =
     typeof body?.clientSendId === "string"
       ? body.clientSendId.trim()
       : typeof body?.idempotencyKey === "string"
         ? body.idempotencyKey.trim()
-        : "";
+        : fromHeader;
 
   try {
     const { job, reused } = await enqueueChat({

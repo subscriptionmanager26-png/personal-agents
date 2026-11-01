@@ -5,7 +5,8 @@ import { createJob, findJobByClientSendId, patchJob } from "@/lib/jobs";
 import { releaseThreadForNewMessage } from "@/lib/settle";
 import { resolveAttachments } from "@/lib/files";
 import { ensurePersonalRepo } from "@/lib/github";
-import type { JobSource, PersonalUser } from "@/lib/types";
+import { tablesEnqueueDispatch, tablesMarkDispatchDone, tablesStoreEnabled } from "@/lib/store-tables";
+import type { Job, JobSource, PersonalUser } from "@/lib/types";
 import { canUseAgent } from "@/lib/workspaces";
 
 export const MAX_MESSAGE_CHARS = 8000;
@@ -17,6 +18,38 @@ export class ChatRejected extends Error {
   ) {
     super(message);
   }
+}
+
+async function scheduleDispatch(user: PersonalUser, job: Job) {
+  if (tablesStoreEnabled()) {
+    try {
+      await tablesEnqueueDispatch(job.id, user.id);
+    } catch (error) {
+      console.error("[enqueueChat] queue insert failed; falling back to after()", job.id, error);
+    }
+  }
+
+  // Best-effort nudge — durable queue cron is primary when TABLES=1.
+  // claimJobDispatch prevents duplicate createAgent if both race.
+  after(async () => {
+    try {
+      await dispatchJob(user, job);
+      if (tablesStoreEnabled()) {
+        await tablesMarkDispatchDone(job.id).catch(() => undefined);
+      }
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      console.error("[enqueueChat] dispatch failed", { jobId: job.id, detail });
+      await patchJob(job.id, user.id, {
+        status: "error",
+        error: detail,
+        event: { type: "error", detail },
+      });
+      if (tablesStoreEnabled()) {
+        await tablesMarkDispatchDone(job.id).catch(() => undefined);
+      }
+    }
+  });
 }
 
 /** Create a chat job and dispatch the user's standing Cursor agent in the background. */
@@ -56,20 +89,8 @@ export async function enqueueChat(input: {
       clientSendId,
     });
     if (existing) {
-      // Ensure dispatch still runs if the first attempt died before after().
       if (!existing.cursorRunId && existing.status === "queued") {
-        after(async () => {
-          try {
-            await dispatchJob(input.user, existing);
-          } catch (error) {
-            const detail = error instanceof Error ? error.message : String(error);
-            await patchJob(existing.id, input.user.id, {
-              status: "error",
-              error: detail,
-              event: { type: "error", detail },
-            });
-          }
-        });
+        await scheduleDispatch(input.user, existing);
       }
       return { job: existing, user: input.user, reused: true as const };
     }
@@ -95,18 +116,7 @@ export async function enqueueChat(input: {
     attachments: resolved.files.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
   });
 
-  after(async () => {
-    try {
-      await dispatchJob(user, job);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      await patchJob(job.id, user.id, {
-        status: "error",
-        error: detail,
-        event: { type: "error", detail },
-      });
-    }
-  });
+  await scheduleDispatch(user, job);
 
   return { job, user, reused: false as const };
 }

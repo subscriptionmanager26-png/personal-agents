@@ -17,7 +17,24 @@ import type {
   StoreData,
 } from "@/lib/types";
 
-import { MAX_JOBS_PER_USER, getJobRow, relationalStoreEnabled, upsertJobRow } from "@/lib/store-relational";
+import {
+  MAX_JOBS_PER_USER,
+  getJobRow,
+  getWebThreadRow,
+  listJobRowsForThread,
+  relationalStoreEnabled,
+  upsertJobRow,
+  upsertWebThreadRow,
+  writeJobRow,
+} from "@/lib/store-relational";
+import {
+  tablesClaimJobDispatch,
+  tablesFindJobByClientSendId,
+  tablesGetJob,
+  tablesListJobsForThread,
+  tablesStoreEnabled,
+  tablesWriteJob,
+} from "@/lib/store-tables";
 
 /** Global soft cap when assembling blob; per-user cap enforced via relational trim. */
 const MAX_JOBS = 2000;
@@ -71,7 +88,108 @@ function lifecycleEvents(next: Job, previous: JobStatus): StreamEventInput[] {
   return [];
 }
 
+function evaluateDispatchClaim(job: Job): "already_dispatched" | "busy" | "ok" {
+  if (
+    job.cursorRunId ||
+    job.status === "dispatched" ||
+    job.status === "delivering" ||
+    job.status === "replied"
+  ) {
+    return "already_dispatched";
+  }
+  if (job.dispatchClaimedAt) {
+    const age = Date.now() - Date.parse(job.dispatchClaimedAt);
+    if (Number.isFinite(age) && age >= 0 && age < DISPATCH_CLAIM_TTL_MS) {
+      return "busy";
+    }
+  }
+  return "ok";
+}
+
+function applyJobPatch(
+  job: Job,
+  patch: Partial<Job> & { event?: { type: string; detail: string } },
+) {
+  const { event, ...rest } = patch;
+  const previous = job.status;
+  Object.assign(job, rest, { updatedAt: new Date().toISOString() });
+  if ("error" in patch && patch.error === undefined) delete job.error;
+  pushStream(job, lifecycleEvents(job, previous));
+  if (event) {
+    job.events.push({
+      at: new Date().toISOString(),
+      type: event.type,
+      detail: event.detail,
+    });
+  }
+}
+
+const ACTIVE_THREAD_STATUS = new Set(["queued", "dispatched", "delivering"]);
+
+/** Update sidebar working flag from relational job rows (no full-store rewrite). */
+async function syncThreadActivityLight(job: Job) {
+  if (job.source === "slack") return;
+  const source = webThreadSource(job.source ?? "web");
+  const threadId = job.webThreadId ?? "main";
+  const now = job.updatedAt || job.createdAt || new Date().toISOString();
+  let thread =
+    (await getWebThreadRow(job.ownerUserId, source, threadId).catch(() => undefined)) ?? undefined;
+  if (!thread) {
+    const { titleFromPrompt } = await import("@/lib/web-threads");
+    thread = {
+      id: threadId,
+      ownerUserId: job.ownerUserId,
+      source,
+      title: titleFromPrompt(job.prompt),
+      createdAt: job.createdAt || now,
+      updatedAt: now,
+    };
+  }
+  const peers = tablesStoreEnabled()
+    ? await tablesListJobsForThread(job.ownerUserId, source, threadId, 25).catch(() => [] as Job[])
+    : await listJobRowsForThread(job.ownerUserId, source, threadId, 25).catch(() => [] as Job[]);
+  const byId = new Map(peers.map((j) => [j.id, j]));
+  byId.set(job.id, job);
+  thread.working = [...byId.values()].some((j) => ACTIVE_THREAD_STATUS.has(j.status));
+  if (now.localeCompare(thread.updatedAt || "") >= 0) {
+    thread.updatedAt = now;
+    const { titleFromPrompt } = await import("@/lib/web-threads");
+    const title = titleFromPrompt(job.prompt);
+    if (title !== "New chat") thread.title = title;
+  }
+  if (tablesStoreEnabled()) {
+    const { tablesWriteThread } = await import("@/lib/store-tables");
+    await tablesWriteThread(thread).catch(() => undefined);
+  }
+  await upsertWebThreadRow(thread);
+}
+
 export async function appendStreamEvents(jobId: string, ownerUserId: string, events: StreamEventInput[]) {
+  if (tablesStoreEnabled()) {
+    try {
+      const job = await tablesGetJob(jobId);
+      if (!job || job.ownerUserId !== ownerUserId) return undefined;
+      const added = pushStream(job, events);
+      job.updatedAt = new Date().toISOString();
+      await tablesWriteJob(job);
+      await writeJobRow(job).catch(() => undefined);
+      return added;
+    } catch (error) {
+      console.error("[appendStreamEvents] tables path failed; falling back", error);
+    }
+  }
+  if (relationalStoreEnabled()) {
+    try {
+      const job = await getJobRow(jobId);
+      if (!job || job.ownerUserId !== ownerUserId) return undefined;
+      const added = pushStream(job, events);
+      job.updatedAt = new Date().toISOString();
+      await writeJobRow(job);
+      return added;
+    } catch (error) {
+      console.error("[appendStreamEvents] light path failed; falling back to updateStore", error);
+    }
+  }
   return updateStore((store) => {
     const job = store.jobs.find((j) => j.id === jobId && j.ownerUserId === ownerUserId);
     if (!job) return undefined;
@@ -89,9 +207,29 @@ export async function findJobByClientSendId(input: {
   webThreadId: string;
   clientSendId: string;
 }): Promise<Job | undefined> {
-  const store = await getStoreFresh();
   const needle = input.clientSendId.trim();
   if (!needle) return undefined;
+
+  if (tablesStoreEnabled()) {
+    try {
+      const hit = await tablesFindJobByClientSendId({ ...input, clientSendId: needle });
+      if (hit) return hit;
+    } catch (error) {
+      console.error("[findJobByClientSendId] tables path failed", error);
+    }
+  }
+
+  if (relationalStoreEnabled()) {
+    try {
+      const rows = await listJobRowsForThread(input.ownerUserId, input.source, input.webThreadId, 40);
+      const hit = rows.find((j) => j.clientSendId === needle);
+      if (hit) return hit;
+    } catch (error) {
+      console.error("[findJobByClientSendId] light path failed; falling back to store", error);
+    }
+  }
+
+  const store = await getStoreFresh();
   for (const job of sortedJobsForUser(store, input.ownerUserId)) {
     if (job.source !== input.source) continue;
     if ((job.webThreadId ?? "main") !== input.webThreadId) continue;
@@ -100,7 +238,8 @@ export async function findJobByClientSendId(input: {
   return undefined;
 }
 
-const DISPATCH_CLAIM_TTL_MS = 4 * 60_000;
+/** Short TTL so a dead after() worker can be reclaimed before the user gives up. */
+const DISPATCH_CLAIM_TTL_MS = 90_000;
 
 /**
  * Atomically claim Cursor dispatch for a job. Concurrent callers get busy /
@@ -110,23 +249,33 @@ export async function claimJobDispatch(
   jobId: string,
   ownerUserId: string,
 ): Promise<"claimed" | "already_dispatched" | "busy" | "missing"> {
+  if (tablesStoreEnabled()) {
+    try {
+      return await tablesClaimJobDispatch(jobId, ownerUserId, Math.floor(DISPATCH_CLAIM_TTL_MS / 1000));
+    } catch (error) {
+      console.error("[claimJobDispatch] tables CAS failed; falling back", error);
+    }
+  }
+  if (relationalStoreEnabled()) {
+    try {
+      const job = await getJobRow(jobId);
+      if (!job || job.ownerUserId !== ownerUserId) return "missing";
+      const state = evaluateDispatchClaim(job);
+      if (state !== "ok") return state;
+      const now = new Date().toISOString();
+      job.dispatchClaimedAt = now;
+      job.updatedAt = now;
+      await writeJobRow(job);
+      return "claimed";
+    } catch (error) {
+      console.error("[claimJobDispatch] light path failed; falling back to updateStore", error);
+    }
+  }
   return updateStore((store) => {
     const job = store.jobs.find((j) => j.id === jobId && j.ownerUserId === ownerUserId);
     if (!job) return "missing";
-    if (
-      job.cursorRunId ||
-      job.status === "dispatched" ||
-      job.status === "delivering" ||
-      job.status === "replied"
-    ) {
-      return "already_dispatched";
-    }
-    if (job.dispatchClaimedAt) {
-      const age = Date.now() - Date.parse(job.dispatchClaimedAt);
-      if (Number.isFinite(age) && age >= 0 && age < DISPATCH_CLAIM_TTL_MS) {
-        return "busy";
-      }
-    }
+    const state = evaluateDispatchClaim(job);
+    if (state !== "ok") return state;
     const now = new Date().toISOString();
     job.dispatchClaimedAt = now;
     job.updatedAt = now;
@@ -175,6 +324,47 @@ export async function createJob(input: {
     events: [{ at: now, type: "created", detail: "Job created" }],
     stream: [{ seq: 1, at: now, type: "status", label: "Queued" }],
   };
+
+  // Scale path: real pa_jobs table (CAS + owner indexes). Falls through to JSON shards.
+  if (tablesStoreEnabled() && source !== "slack") {
+    try {
+      await tablesWriteJob(job);
+      // Dual-write shard so RELATIONAL readers stay consistent during cutover.
+      await writeJobRow(job).catch(() => undefined);
+      if (webThreadId) {
+        await touchWebThread({
+          ownerUserId: input.ownerUserId,
+          source: webThreadSource(source),
+          threadId: webThreadId,
+          prompt: input.prompt,
+        });
+        await syncThreadActivityLight(job).catch(() => undefined);
+      }
+      return job;
+    } catch (error) {
+      console.error("[createJob] tables path failed; falling back", error);
+    }
+  }
+
+  // Hot path: write pa:j + thread rows only. Full-store rewrite was taking ~70s in prod
+  // and starving the after() dispatch worker.
+  if (relationalStoreEnabled() && source !== "slack") {
+    try {
+      await writeJobRow(job);
+      if (webThreadId) {
+        await touchWebThread({
+          ownerUserId: input.ownerUserId,
+          source: webThreadSource(source),
+          threadId: webThreadId,
+          prompt: input.prompt,
+        });
+        await syncThreadActivityLight(job).catch(() => undefined);
+      }
+      return job;
+    } catch (error) {
+      console.error("[createJob] light path failed; falling back to updateStore", error);
+    }
+  }
 
   const created = await updateStore((store) => {
     store.jobs.unshift(job);
@@ -234,6 +424,14 @@ export function threadKey(
 }
 
 export async function getJob(id: string, opts?: { fresh?: boolean }) {
+  if (tablesStoreEnabled()) {
+    try {
+      const row = await tablesGetJob(id);
+      if (row) return row;
+    } catch {
+      // fall through
+    }
+  }
   if (relationalStoreEnabled()) {
     try {
       const row = await getJobRow(id);
@@ -311,29 +509,43 @@ export async function patchJob(
   ownerUserId: string,
   patch: Partial<Job> & { event?: { type: string; detail: string } },
 ) {
+  if (tablesStoreEnabled()) {
+    try {
+      const job = (await tablesGetJob(id)) ?? (await getJobRow(id).catch(() => undefined));
+      if (!job || job.ownerUserId !== ownerUserId) return undefined;
+      applyJobPatch(job, patch);
+      await tablesWriteJob(job);
+      await writeJobRow(job).catch(() => undefined);
+      await syncThreadActivityLight(job).catch(() => undefined);
+      return job;
+    } catch (error) {
+      console.error("[patchJob] tables path failed; falling back", error);
+    }
+  }
+  if (relationalStoreEnabled()) {
+    try {
+      const job = await getJobRow(id);
+      if (!job || job.ownerUserId !== ownerUserId) return undefined;
+      applyJobPatch(job, patch);
+      await writeJobRow(job);
+      await syncThreadActivityLight(job).catch(() => undefined);
+      return job;
+    } catch (error) {
+      console.error("[patchJob] light path failed; falling back to updateStore", error);
+    }
+  }
   return updateStore((store) => {
     const job = store.jobs.find(
       (j) => j.id === id && j.ownerUserId === ownerUserId,
     );
     if (!job) return undefined;
-    const { event, ...rest } = patch;
-    const previous = job.status;
-    Object.assign(job, rest, { updatedAt: new Date().toISOString() });
-    if ("error" in patch && patch.error === undefined) delete job.error;
-    pushStream(job, lifecycleEvents(job, previous));
-    if (event) {
-      job.events.push({
-        at: new Date().toISOString(),
-        type: event.type,
-        detail: event.detail,
-      });
-    }
+    applyJobPatch(job, patch);
     syncWebThreadActivity(store, job);
     void upsertJobRow(job).catch(() => undefined);
     const source = webThreadSource(job.source ?? "web");
     const threadKeyId = webThreadStoreKey(job.ownerUserId, source, job.webThreadId ?? "main");
     const thread = store.webThreads[threadKeyId];
-    if (thread) void import("@/lib/store-relational").then((m) => m.upsertWebThreadRow(thread)).catch(() => undefined);
+    if (thread) void upsertWebThreadRow(thread).catch(() => undefined);
     return job;
   });
 }

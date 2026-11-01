@@ -1,6 +1,13 @@
 import { threadKey } from "@/lib/jobs";
 import { getStore, updateStore } from "@/lib/store";
-import { upsertWebThreadRow } from "@/lib/store-relational";
+import { getWebThreadRow, relationalStoreEnabled, upsertWebThreadRow } from "@/lib/store-relational";
+import {
+  tablesBeginThreadAgentCreate,
+  tablesClearThreadAgentCreateLock,
+  tablesGetThread,
+  tablesStoreEnabled,
+  tablesWriteThread,
+} from "@/lib/store-tables";
 import type { Job, PersonalUser } from "@/lib/types";
 import {
   getWebThread,
@@ -38,6 +45,75 @@ export async function beginThreadAgentCreate(
 
   const source = webThreadSource(job.source ?? "web");
   const threadId = job.webThreadId ?? "main";
+
+  if (tablesStoreEnabled()) {
+    try {
+      const result = await tablesBeginThreadAgentCreate(job.ownerUserId, source, threadId, job.id);
+      if (result === "wait") return { mode: "wait" };
+      if (result === "create") return { mode: "create" };
+      if (typeof result === "object" && result.mode === "reuse") {
+        const thread = await tablesGetThread(job.ownerUserId, source, threadId);
+        return {
+          mode: "reuse",
+          agentId: result.agentId,
+          skillsHash: thread?.cursorAgentSkillsHash,
+        };
+      }
+      if (result === "reuse") {
+        const thread = await tablesGetThread(job.ownerUserId, source, threadId);
+        if (thread?.cursorAgentId) {
+          return { mode: "reuse", agentId: thread.cursorAgentId, skillsHash: thread.cursorAgentSkillsHash };
+        }
+      }
+    } catch (error) {
+      console.error("[beginThreadAgentCreate] tables path failed; falling back", error);
+    }
+  }
+
+  if (relationalStoreEnabled()) {
+    try {
+      const now = Date.now();
+      let thread = await getWebThreadRow(job.ownerUserId, source, threadId);
+      if (!thread) {
+        const iso = new Date(now).toISOString();
+        thread = {
+          id: threadId,
+          ownerUserId: job.ownerUserId,
+          source,
+          title: "New chat",
+          createdAt: iso,
+          updatedAt: iso,
+        };
+      }
+      if (thread.cursorAgentId) {
+        return {
+          mode: "reuse",
+          agentId: thread.cursorAgentId,
+          skillsHash: thread.cursorAgentSkillsHash,
+        };
+      }
+      if (thread.agentCreateLockAt) {
+        const age = now - Date.parse(thread.agentCreateLockAt);
+        if (
+          Number.isFinite(age) &&
+          age >= 0 &&
+          age < AGENT_CREATE_LOCK_TTL_MS &&
+          thread.agentCreateLockJobId &&
+          thread.agentCreateLockJobId !== job.id
+        ) {
+          return { mode: "wait" };
+        }
+      }
+      thread.agentCreateLockAt = new Date(now).toISOString();
+      thread.agentCreateLockJobId = job.id;
+      thread.updatedAt = thread.agentCreateLockAt;
+      await upsertWebThreadRow(thread);
+      return { mode: "create" };
+    } catch (error) {
+      console.error("[beginThreadAgentCreate] light path failed; falling back to updateStore", error);
+    }
+  }
+
   const key = webThreadStoreKey(job.ownerUserId, source, threadId);
   const now = Date.now();
 
@@ -86,6 +162,31 @@ export async function clearThreadAgentCreateLock(job: Job): Promise<void> {
   if (job.source === "slack") return;
   const source = webThreadSource(job.source ?? "web");
   const threadId = job.webThreadId ?? "main";
+
+  if (tablesStoreEnabled()) {
+    try {
+      await tablesClearThreadAgentCreateLock(job.ownerUserId, source, threadId, job.id);
+      return;
+    } catch (error) {
+      console.error("[clearThreadAgentCreateLock] tables path failed", error);
+    }
+  }
+
+  if (relationalStoreEnabled()) {
+    try {
+      const thread = await getWebThreadRow(job.ownerUserId, source, threadId);
+      if (!thread) return;
+      if (thread.agentCreateLockJobId && thread.agentCreateLockJobId !== job.id) return;
+      delete thread.agentCreateLockAt;
+      delete thread.agentCreateLockJobId;
+      thread.updatedAt = new Date().toISOString();
+      await upsertWebThreadRow(thread);
+      return;
+    } catch (error) {
+      console.error("[clearThreadAgentCreateLock] light path failed", error);
+    }
+  }
+
   const key = webThreadStoreKey(job.ownerUserId, source, threadId);
   await updateStore((store) => {
     const thread = store.webThreads[key];

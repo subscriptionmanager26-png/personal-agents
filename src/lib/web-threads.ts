@@ -1,6 +1,12 @@
 import { getStore, updateStore } from "@/lib/store";
 import { threadKey } from "@/lib/jobs";
-import { listWebThreadRows, relationalStoreEnabled, upsertWebThreadRow } from "@/lib/store-relational";
+import {
+  getWebThreadRow,
+  listWebThreadRows,
+  relationalStoreEnabled,
+  upsertWebThreadRow,
+} from "@/lib/store-relational";
+import { tablesGetThread, tablesStoreEnabled, tablesWriteThread } from "@/lib/store-tables";
 import type { Job, JobSource, StoreData, WebThread } from "@/lib/types";
 
 export function webThreadStoreKey(ownerUserId: string, source: "web" | "api", threadId: string) {
@@ -18,6 +24,22 @@ export function titleFromPrompt(prompt: string) {
 }
 
 export async function getWebThread(ownerUserId: string, source: "web" | "api", threadId: string) {
+  if (tablesStoreEnabled()) {
+    try {
+      const row = await tablesGetThread(ownerUserId, source, threadId);
+      if (row) return row;
+    } catch {
+      // fall through
+    }
+  }
+  if (relationalStoreEnabled()) {
+    try {
+      const row = await getWebThreadRow(ownerUserId, source, threadId);
+      if (row) return row;
+    } catch {
+      // fall through
+    }
+  }
   const { getStoreFresh } = await import("@/lib/store");
   const store = await getStoreFresh();
   const key = webThreadStoreKey(ownerUserId, source, threadId);
@@ -35,6 +57,57 @@ export async function touchWebThread(input: {
 }) {
   const now = new Date().toISOString();
   const title = titleFromPrompt(input.prompt);
+
+  if (tablesStoreEnabled()) {
+    try {
+      const existing = await tablesGetThread(input.ownerUserId, input.source, input.threadId);
+      if (existing) {
+        existing.updatedAt = now;
+        if (existing.title === "New chat" && title !== "New chat") existing.title = title;
+        await tablesWriteThread(existing);
+        await upsertWebThreadRow(existing).catch(() => undefined);
+        return existing;
+      }
+      const thread: WebThread = {
+        id: input.threadId,
+        ownerUserId: input.ownerUserId,
+        source: input.source,
+        title,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await tablesWriteThread(thread);
+      await upsertWebThreadRow(thread).catch(() => undefined);
+      return thread;
+    } catch (error) {
+      console.error("[touchWebThread] tables path failed; falling back", error);
+    }
+  }
+
+  if (relationalStoreEnabled()) {
+    try {
+      const existing = await getWebThreadRow(input.ownerUserId, input.source, input.threadId);
+      if (existing) {
+        existing.updatedAt = now;
+        if (existing.title === "New chat" && title !== "New chat") existing.title = title;
+        await upsertWebThreadRow(existing);
+        return existing;
+      }
+      const thread: WebThread = {
+        id: input.threadId,
+        ownerUserId: input.ownerUserId,
+        source: input.source,
+        title,
+        createdAt: now,
+        updatedAt: now,
+      };
+      await upsertWebThreadRow(thread);
+      return thread;
+    } catch (error) {
+      console.error("[touchWebThread] light path failed; falling back to updateStore", error);
+    }
+  }
+
   return updateStore((store) => {
     const key = webThreadStoreKey(input.ownerUserId, input.source, input.threadId);
     const existing = store.webThreads[key];
@@ -66,6 +139,58 @@ export async function updateWebThreadAgent(
   cursorAgentSkillsHash: string,
 ) {
   const now = new Date().toISOString();
+  const apply = (thread: WebThread) => {
+    thread.cursorAgentId = cursorAgentId;
+    thread.cursorAgentSkillsHash = cursorAgentSkillsHash;
+    thread.updatedAt = now;
+    delete thread.agentCreateLockAt;
+    delete thread.agentCreateLockJobId;
+    return thread;
+  };
+
+  if (tablesStoreEnabled()) {
+    try {
+      let thread = await tablesGetThread(ownerUserId, source, threadId);
+      if (!thread) {
+        thread = {
+          id: threadId,
+          ownerUserId,
+          source,
+          title: "New chat",
+          createdAt: now,
+          updatedAt: now,
+        };
+      }
+      apply(thread);
+      await tablesWriteThread(thread);
+      await upsertWebThreadRow(thread).catch(() => undefined);
+      return thread;
+    } catch (error) {
+      console.error("[updateWebThreadAgent] tables path failed; falling back", error);
+    }
+  }
+
+  if (relationalStoreEnabled()) {
+    try {
+      let thread = await getWebThreadRow(ownerUserId, source, threadId);
+      if (!thread) {
+        thread = {
+          id: threadId,
+          ownerUserId,
+          source,
+          title: "New chat",
+          createdAt: now,
+          updatedAt: now,
+        };
+      }
+      apply(thread);
+      await upsertWebThreadRow(thread);
+      return thread;
+    } catch (error) {
+      console.error("[updateWebThreadAgent] light path failed; falling back", error);
+    }
+  }
+
   return updateStore((store) => {
     const key = webThreadStoreKey(ownerUserId, source, threadId);
     let thread = store.webThreads[key];
@@ -80,9 +205,7 @@ export async function updateWebThreadAgent(
       };
       store.webThreads[key] = thread;
     }
-    thread.cursorAgentId = cursorAgentId;
-    thread.cursorAgentSkillsHash = cursorAgentSkillsHash;
-    thread.updatedAt = now;
+    apply(thread);
     void upsertWebThreadRow(thread).catch(() => undefined);
     return thread;
   });

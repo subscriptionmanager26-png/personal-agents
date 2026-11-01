@@ -148,13 +148,42 @@ async function upsertRow(id: string, data: unknown, updatedAt?: string) {
 
 export async function upsertJobRow(job: Job): Promise<void> {
   if (!dualWriteRelationalEnabled()) return;
+  try {
+    await writeJobRow(job);
+  } catch (err) {
+    console.error("[store-relational] upsert job", job.id, err);
+  }
+}
+
+/** Primary job write for the relational hot path — throws on failure. */
+export async function writeJobRow(job: Job): Promise<void> {
+  if (!supabaseStoreConfigured()) {
+    throw new Error("Supabase store is not configured for job-row write.");
+  }
   const payload: StoredJob = { kind: "job", job };
   const error = await upsertRow(jobRowId(job.id), payload, job.updatedAt);
-  if (error) console.error("[store-relational] upsert job", job.id, error.message);
-  await upsertJobIndexEntry(job).catch((err) =>
-    console.error("[store-relational] job index", job.id, err),
-  );
+  if (error) throw error;
+  await upsertJobIndexEntry(job);
   await trimUserJobs(job.ownerUserId).catch(() => undefined);
+}
+
+/** O(1) read of one web/api thread row. */
+export async function getWebThreadRow(
+  ownerUserId: string,
+  source: "web" | "api",
+  threadId: string,
+): Promise<WebThread | undefined> {
+  if (!supabaseStoreConfigured()) return undefined;
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", threadRowId(ownerUserId, source, threadId))
+    .maybeSingle();
+  if (error) throw error;
+  const thread = (data?.data as StoredThread | undefined)?.thread;
+  if (!thread || thread.ownerUserId !== ownerUserId) return undefined;
+  return thread;
 }
 
 /** O(1) read of one owner's sharded user row (no full-store assemble). */
@@ -248,10 +277,8 @@ export async function upsertWebThreadRow(thread: WebThread): Promise<void> {
     payload,
     thread.updatedAt,
   );
-  if (error) console.error("[store-relational] upsert thread", thread.id, error.message);
-  await upsertThreadIndexEntry(thread).catch((err) =>
-    console.error("[store-relational] thread index", thread.id, err),
-  );
+  if (error) throw error;
+  await upsertThreadIndexEntry(thread);
 }
 
 /** Merge one thread into the per-user sidebar index (primary-key row). */

@@ -21,6 +21,8 @@ export type MessageView = {
   blocks: UiBlock[];
   actions: ActionRequired[];
   error?: string;
+  /** Echo of the client's idempotency key when present — used for Load-failed recovery. */
+  clientSendId?: string;
 };
 
 function streamHasBlocks(job: Job) {
@@ -107,6 +109,7 @@ export function messageView(job: Job): MessageView {
     blocks: blocksForJob(job),
     actions: stream.flatMap((e) => (e.type === "action_required" ? [clientAction(e.action)] : [])),
     error: job.status === "error" && !isFalseBusyWithUi(job) ? clientError(job.error) : undefined,
+    clientSendId: job.clientSendId,
   };
 }
 
@@ -125,6 +128,7 @@ function safeMessageView(job: Job): MessageView {
       blocks: [],
       actions: [],
       error: job.status === "error" && !isFalseBusyWithUi(job) ? clientError(job.error) : undefined,
+      clientSendId: job.clientSendId,
     };
   }
 }
@@ -138,7 +142,15 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
   } = await import("@/lib/store-relational");
 
   let candidates: Job[] = [];
-  if (relationalStoreEnabled()) {
+  const { tablesListJobsForThread, tablesStoreEnabled } = await import("@/lib/store-tables");
+  if (tablesStoreEnabled() && opts.threadId) {
+    try {
+      candidates = await tablesListJobsForThread(ownerUserId, opts.source, opts.threadId, limit);
+    } catch {
+      candidates = [];
+    }
+  }
+  if (!candidates.length && relationalStoreEnabled()) {
     try {
       candidates = opts.threadId
         ? await listJobRowsForThread(ownerUserId, opts.source, opts.threadId, limit)

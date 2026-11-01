@@ -255,8 +255,8 @@ export async function reconcileJob(job: Job): Promise<Job> {
       return (await getJob(job.id, { fresh: true })) ?? job;
     }
     if (ageMs > 90_000 && !job.cursorRunId) {
-      // Reclaim only — never call dispatchJob from reconcile. Re-dispatch from
-      // list/poll created duplicate Cursor agents and ghost user turns.
+      // Prefer binding an existing Cursor run. If none exists, kick dispatch once —
+      // claimJobDispatch (90s TTL) prevents duplicate createAgent/createRun.
       const agentId = await resolveCursorAgentId(job).catch(() => undefined);
       if (agentId) {
         const bound = await ensureJobRunBinding(job, agentId).catch(() => undefined);
@@ -264,6 +264,17 @@ export async function reconcileJob(job: Job): Promise<Job> {
           await settleIfFinished(bound).catch(() => undefined);
           return (await getJob(job.id, { fresh: true })) ?? bound;
         }
+      }
+      try {
+        const { getUser } = await import("@/lib/users");
+        const { dispatchJob } = await import("@/lib/cursor");
+        const owner = await getUser(job.ownerUserId);
+        if (owner) {
+          console.warn("[reconcile] re-kick queued job with no run", { jobId: job.id, ageMs });
+          await dispatchJob(owner, job);
+        }
+      } catch (error) {
+        console.error("[reconcile] re-kick failed", job.id, error);
       }
       return (await getJob(job.id, { fresh: true })) ?? job;
     }

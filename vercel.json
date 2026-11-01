@@ -3,6 +3,10 @@
     {
       "path": "/api/cursor/poll",
       "schedule": "0 12 * * *"
+    },
+    {
+      "path": "/api/cron/dispatch-queue",
+      "schedule": "* * * * *"
     }
   ]
 }
