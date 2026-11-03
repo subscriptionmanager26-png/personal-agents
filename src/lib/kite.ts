@@ -42,7 +42,16 @@ function kiteUrl() {
 
 type RpcReply = { result?: unknown; error?: { code: number; message: string } };
 
-async function post(sessionId: string | undefined, payload: Record<string, unknown>) {
+/** Default tool calls. Login/session open use a shorter budget so BFF does not abort first. */
+const POST_MS = 30_000;
+const SESSION_POST_MS = 12_000;
+
+async function post(
+  sessionId: string | undefined,
+  payload: Record<string, unknown>,
+  timeoutMs = POST_MS,
+) {
+  const t0 = Date.now();
   const res = await fetch(kiteUrl(), {
     method: "POST",
     headers: {
@@ -53,7 +62,7 @@ async function post(sessionId: string | undefined, payload: Record<string, unkno
     },
     body: JSON.stringify(payload),
     cache: "no-store",
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   const text = await res.text();
   const json = res.headers.get("content-type")?.includes("text/event-stream")
@@ -70,18 +79,35 @@ async function post(sessionId: string | undefined, payload: Record<string, unkno
   } catch {
     body = undefined;
   }
+  const method = typeof payload.method === "string" ? payload.method : "rpc";
+  console.info("[kite] rpc", { method, status: res.status, ms: Date.now() - t0, hasSession: Boolean(sessionId) });
   return { status: res.status, body, sessionId: res.headers.get("mcp-session-id") ?? undefined };
 }
 
 async function openSession() {
-  const init = await post(undefined, {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: "personal-agents", version: "1.0.0" } },
-  });
-  if (init.status !== 200 || !init.sessionId) throw new Error(`Zerodha is not reachable right now (HTTP ${init.status}).`);
-  await post(init.sessionId, { jsonrpc: "2.0", method: "notifications/initialized" });
+  const init = await post(
+    undefined,
+    {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: PROTOCOL,
+        capabilities: {},
+        clientInfo: { name: "personal-agents", version: "1.0.0" },
+      },
+    },
+    SESSION_POST_MS,
+  );
+  if (init.status !== 200 || !init.sessionId) {
+    throw new Error(`Zerodha is not reachable right now (HTTP ${init.status}).`);
+  }
+  // Best-effort notify — do not burn the connect budget if Zerodha is slow here.
+  await post(
+    init.sessionId,
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    SESSION_POST_MS,
+  ).catch(() => undefined);
   return init.sessionId;
 }
 
@@ -166,16 +192,31 @@ async function sessionFor(ownerUserId: string, fresh: boolean) {
   return sessionId;
 }
 
-/** One JSON-RPC call on the client's Kite session; opens a new session once if Zerodha lost the old one. */
-async function kiteRequest(ownerUserId: string, method: string, params?: Record<string, unknown>) {
-  for (const fresh of [false, true]) {
+/**
+ * One JSON-RPC call on the client's Kite session.
+ * By default reuse the stored session, then open a fresh one once on failure.
+ * `preferFresh` skips the stale attempt — required for login, which otherwise wastes ~30s
+ * on a dead session before opening a new one (and the Pramaan BFF aborts at 55s).
+ */
+async function kiteRequest(
+  ownerUserId: string,
+  method: string,
+  params?: Record<string, unknown>,
+  opts?: { preferFresh?: boolean; timeoutMs?: number },
+) {
+  const attempts = opts?.preferFresh ? [true] : [false, true];
+  for (const fresh of attempts) {
     const sessionId = await sessionFor(ownerUserId, fresh);
-    const res = await post(sessionId, { jsonrpc: "2.0", id: 1, method, params });
+    const res = await post(
+      sessionId,
+      { jsonrpc: "2.0", id: 1, method, params },
+      opts?.timeoutMs ?? POST_MS,
+    );
     if (res.status >= 200 && res.status < 300 && res.body) {
       if (res.body.error) throw new Error(`Zerodha: ${res.body.error.message}`);
       return res.body.result;
     }
-    if (fresh) throw new Error(`Zerodha request failed (HTTP ${res.status}).`);
+    if (fresh || attempts.length === 1) throw new Error(`Zerodha request failed (HTTP ${res.status}).`);
   }
   throw new Error("Zerodha request failed.");
 }
@@ -221,8 +262,18 @@ function extractKiteLoginUrl(text: string): string | undefined {
 
 /** Zerodha's login link for this client's session, or who is already logged in. */
 export async function kiteLogin(ownerUserId: string): Promise<{ loggedInAs: string } | { url: string }> {
-  const result = await kiteCall(ownerUserId, "login");
+  const t0 = Date.now();
+  // Always mint a fresh MCP session for login. Reusing a stale session after a prior
+  // successful connect hangs ~30s then retries, which exceeds the Pramaan BFF timeout.
+  const raw = await kiteRequest(
+    ownerUserId,
+    "tools/call",
+    { name: "login", arguments: {} },
+    { preferFresh: true, timeoutMs: SESSION_POST_MS },
+  );
+  const result = (raw ?? { content: [] }) as ToolResult;
   const text = toolResultText(result);
+  console.info("[kite] login", { ownerUserId, ms: Date.now() - t0, isError: result.isError });
   const already = text.match(/already logged in as (.+)$/im);
   if (already) return { loggedInAs: already[1].trim() };
   const url = extractKiteLoginUrl(text);
