@@ -194,9 +194,9 @@ async function sessionFor(ownerUserId: string, fresh: boolean) {
 
 /**
  * One JSON-RPC call on the client's Kite session.
- * By default reuse the stored session, then open a fresh one once on failure.
- * `preferFresh` skips the stale attempt — required for login, which otherwise wastes ~30s
- * on a dead session before opening a new one (and the Pramaan BFF aborts at 55s).
+ * Reuse the stored session by default. Only mint a fresh session when `preferFresh`
+ * (login) — auto-retrying with a new session overwrites the OAuth-bound id and
+ * leaves later tools like get_holdings on a logged-out session.
  */
 async function kiteRequest(
   ownerUserId: string,
@@ -204,21 +204,17 @@ async function kiteRequest(
   params?: Record<string, unknown>,
   opts?: { preferFresh?: boolean; timeoutMs?: number },
 ) {
-  const attempts = opts?.preferFresh ? [true] : [false, true];
-  for (const fresh of attempts) {
-    const sessionId = await sessionFor(ownerUserId, fresh);
-    const res = await post(
-      sessionId,
-      { jsonrpc: "2.0", id: 1, method, params },
-      opts?.timeoutMs ?? POST_MS,
-    );
-    if (res.status >= 200 && res.status < 300 && res.body) {
-      if (res.body.error) throw new Error(`Zerodha: ${res.body.error.message}`);
-      return res.body.result;
-    }
-    if (fresh || attempts.length === 1) throw new Error(`Zerodha request failed (HTTP ${res.status}).`);
+  const sessionId = await sessionFor(ownerUserId, Boolean(opts?.preferFresh));
+  const res = await post(
+    sessionId,
+    { jsonrpc: "2.0", id: 1, method, params },
+    opts?.timeoutMs ?? POST_MS,
+  );
+  if (res.status >= 200 && res.status < 300 && res.body) {
+    if (res.body.error) throw new Error(`Zerodha: ${res.body.error.message}`);
+    return res.body.result;
   }
-  throw new Error("Zerodha request failed.");
+  throw new Error(`Zerodha request failed (HTTP ${res.status}).`);
 }
 
 export async function kiteTools(ownerUserId: string) {
@@ -301,7 +297,8 @@ export async function kiteLoggedInAs(ownerUserId: string) {
   }
 }
 
-const NEEDS_LOGIN = /log ?in first|login required|not logged in|session (has )?expired|invalid (access )?token/i;
+const NEEDS_LOGIN =
+  /log ?in first|login required|not logged in|session (has )?expired|invalid (access )?token|failed to execute\s+get_/i;
 
 export type KiteHoldingDraft = {
   ticker: string;
@@ -310,34 +307,30 @@ export type KiteHoldingDraft = {
   name?: string;
 };
 
-function parseHoldingsJson(text: string): {
-  rows: Record<string, unknown>[];
-  hasMore: boolean;
-} {
+function parseHoldingsJson(text: string): Record<string, unknown>[] {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { rows: [], hasMore: false };
+    return [];
   }
-  if (Array.isArray(parsed)) return { rows: parsed as Record<string, unknown>[], hasMore: false };
-  if (!parsed || typeof parsed !== "object") return { rows: [], hasMore: false };
+  if (Array.isArray(parsed)) return parsed as Record<string, unknown>[];
+  if (!parsed || typeof parsed !== "object") return [];
   const obj = parsed as Record<string, unknown>;
   const rowsRaw = obj.data ?? obj.holdings ?? obj.result;
-  const rows = Array.isArray(rowsRaw) ? (rowsRaw as Record<string, unknown>[]) : [];
-  const pagination =
-    obj.pagination && typeof obj.pagination === "object"
-      ? (obj.pagination as { has_more?: boolean; hasMore?: boolean })
-      : undefined;
-  const hasMore = Boolean(pagination?.has_more ?? pagination?.hasMore);
-  return { rows, hasMore };
+  return Array.isArray(rowsRaw) ? (rowsRaw as Record<string, unknown>[]) : [];
 }
 
 function draftFromKiteRow(raw: Record<string, unknown>): KiteHoldingDraft | null {
   const ticker = String(raw.tradingsymbol ?? raw.trading_symbol ?? raw.symbol ?? raw.ticker ?? "")
     .trim()
     .toUpperCase();
-  const qty = Number(raw.quantity ?? raw.qty ?? 0);
+  // Kite net qty can include t1; prefer quantity, fall back to realised+t1.
+  const qty = Number(
+    raw.quantity ??
+      raw.qty ??
+      (Number(raw.realised_quantity ?? 0) + Number(raw.t1_quantity ?? 0) || 0),
+  );
   if (!ticker || !Number.isFinite(qty) || qty <= 0) return null;
   const avg = Number(raw.average_price ?? raw.average ?? raw.avg ?? raw.avgPrice);
   const name = typeof raw.name === "string" ? raw.name.trim() : undefined;
@@ -349,7 +342,7 @@ function draftFromKiteRow(raw: Record<string, unknown>): KiteHoldingDraft | null
 
 /**
  * Pull equity holdings via the client's Kite MCP session (same connection as Connect Zerodha).
- * Paginates get_holdings when the hosted server returns has_more.
+ * Omits pagination args so Kite returns the full list in one call.
  */
 export async function kiteHoldings(
   ownerUserId: string,
@@ -358,30 +351,26 @@ export async function kiteHoldings(
     throw new Error("Zerodha is not connected.");
   }
   const t0 = Date.now();
+  // Empty args → full holdings array (limit would wrap pagination metadata).
+  const result = await kiteCall(ownerUserId, "get_holdings", {});
+  const text = toolResultText(result);
+  if (result.isError || NEEDS_LOGIN.test(text)) {
+    console.info("[kite] holdings need login", {
+      ownerUserId,
+      ms: Date.now() - t0,
+      preview: text.slice(0, 160),
+    });
+    return {
+      needsLogin: true,
+      message: "Your Zerodha session expired. Log in again, then fetch holdings.",
+    };
+  }
   const byTicker = new Map<string, KiteHoldingDraft>();
-  let from = 0;
-  const limit = 50;
-  for (let page = 0; page < 20; page++) {
-    const result = await kiteCall(ownerUserId, "get_holdings", { from, limit });
-    const text = toolResultText(result);
-    if (result.isError || NEEDS_LOGIN.test(text)) {
-      if (NEEDS_LOGIN.test(text) || /please log in/i.test(text)) {
-        return {
-          needsLogin: true,
-          message: "Log in to Zerodha, then fetch holdings again.",
-        };
-      }
-      throw new Error(text.slice(0, 200) || "Could not fetch holdings from Zerodha.");
-    }
-    const { rows, hasMore } = parseHoldingsJson(text);
-    for (const raw of rows) {
-      if (!raw || typeof raw !== "object") continue;
-      const draft = draftFromKiteRow(raw);
-      if (!draft) continue;
-      byTicker.set(draft.ticker, draft);
-    }
-    if (!hasMore || rows.length === 0) break;
-    from += limit;
+  for (const raw of parseHoldingsJson(text)) {
+    if (!raw || typeof raw !== "object") continue;
+    const draft = draftFromKiteRow(raw);
+    if (!draft) continue;
+    byTicker.set(draft.ticker, draft);
   }
   const holdings = [...byTicker.values()].sort((a, b) => a.ticker.localeCompare(b.ticker));
   console.info("[kite] holdings", { ownerUserId, ms: Date.now() - t0, count: holdings.length });
