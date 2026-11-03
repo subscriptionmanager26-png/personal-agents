@@ -1,6 +1,11 @@
 import { decryptSecret, encryptSecret, randomId } from "@/lib/crypto";
 import type { McpTool, ToolResult } from "@/lib/mcp-server";
 import { getStoreFresh, updateStore } from "@/lib/store";
+import {
+  dualWriteRelationalEnabled,
+  readUserConnections,
+  writeUserConnections,
+} from "@/lib/store-relational";
 import type { McpConnection } from "@/lib/types";
 import { appendAudit } from "@/lib/users";
 
@@ -84,28 +89,50 @@ function findKite(list: McpConnection[] | undefined, ownerUserId: string) {
   return list?.find((c) => c.builtin === "kite" && c.ownerUserId === ownerUserId);
 }
 
-export async function getKiteConnection(ownerUserId: string) {
-  // Fresh read — cached getStore() could miss a connect that just wrote on another isolate.
+async function listConnections(ownerUserId: string): Promise<McpConnection[]> {
+  if (dualWriteRelationalEnabled()) {
+    try {
+      const rows = await readUserConnections(ownerUserId);
+      if (rows) return rows;
+    } catch (error) {
+      console.error("[kite] light connection read failed; falling back to store", error);
+    }
+  }
   const store = await getStoreFresh();
-  return findKite(store.connections[ownerUserId], ownerUserId);
+  return store.connections[ownerUserId] ?? [];
+}
+
+async function saveConnections(ownerUserId: string, connections: McpConnection[]) {
+  if (dualWriteRelationalEnabled()) {
+    try {
+      await writeUserConnections(ownerUserId, connections);
+      return;
+    } catch (error) {
+      console.error("[kite] light connection write failed; falling back to updateStore", error);
+    }
+  }
+  await updateStore((store) => {
+    store.connections[ownerUserId] = connections;
+  });
+}
+
+export async function getKiteConnection(ownerUserId: string) {
+  return findKite(await listConnections(ownerUserId), ownerUserId);
 }
 
 export async function connectKite(ownerUserId: string) {
-  const added = await updateStore((store) => {
-    const list = store.connections[ownerUserId] ?? [];
-    if (findKite(list, ownerUserId)) return false;
-    list.push({
-      id: randomId("conn"),
-      ownerUserId,
-      name: KITE_MCP_NAME,
-      url: kiteUrl(),
-      builtin: "kite",
-      createdAt: new Date().toISOString(),
-    });
-    store.connections[ownerUserId] = list;
-    return true;
+  const list = await listConnections(ownerUserId);
+  if (findKite(list, ownerUserId)) return;
+  list.push({
+    id: randomId("conn"),
+    ownerUserId,
+    name: KITE_MCP_NAME,
+    url: kiteUrl(),
+    builtin: "kite",
+    createdAt: new Date().toISOString(),
   });
-  if (added) await appendAudit({ ownerUserId, type: "connection.add", detail: "Connected Zerodha (Kite MCP)" });
+  await saveConnections(ownerUserId, list);
+  await appendAudit({ ownerUserId, type: "connection.add", detail: "Connected Zerodha (Kite MCP)" });
 }
 
 export async function disconnectKite(ownerUserId: string) {
@@ -119,9 +146,8 @@ export async function disconnectKite(ownerUserId: string) {
       signal: AbortSignal.timeout(10_000),
     }).catch(() => undefined);
   }
-  await updateStore((store) => {
-    store.connections[ownerUserId] = (store.connections[ownerUserId] ?? []).filter((c) => c.id !== conn.id);
-  });
+  const next = (await listConnections(ownerUserId)).filter((c) => c.id !== conn.id);
+  await saveConnections(ownerUserId, next);
   await appendAudit({ ownerUserId, type: "connection.delete", detail: "Disconnected Zerodha (Kite MCP)" });
 }
 
@@ -131,12 +157,12 @@ async function sessionFor(ownerUserId: string, fresh: boolean) {
   const age = conn.sessionStartedAt ? Date.now() - Date.parse(conn.sessionStartedAt) : Infinity;
   if (!fresh && conn.sessionEnc && age < SESSION_MAX_MS) return decryptSecret(conn.sessionEnc, PURPOSE, ownerUserId);
   const sessionId = await openSession();
-  await updateStore((store) => {
-    const c = findKite(store.connections[ownerUserId], ownerUserId);
-    if (!c) return;
-    c.sessionEnc = encryptSecret(sessionId, PURPOSE, ownerUserId);
-    c.sessionStartedAt = new Date().toISOString();
-  });
+  const list = await listConnections(ownerUserId);
+  const c = findKite(list, ownerUserId);
+  if (!c) throw new Error("Zerodha is not connected.");
+  c.sessionEnc = encryptSecret(sessionId, PURPOSE, ownerUserId);
+  c.sessionStartedAt = new Date().toISOString();
+  await saveConnections(ownerUserId, list);
   return sessionId;
 }
 

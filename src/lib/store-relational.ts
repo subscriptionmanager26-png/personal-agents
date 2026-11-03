@@ -1,6 +1,6 @@
 import { coerceStoreData, emptyStoreData } from "@/lib/store-coerce";
 import { getSupabaseAdmin, supabaseStoreConfigured } from "@/lib/supabase-admin";
-import type { Job, JobSource, PersonalUser, StoreData, WebThread, Workspace } from "@/lib/types";
+import type { Job, JobSource, McpConnection, PersonalUser, StoreData, WebThread, Workspace } from "@/lib/types";
 
 /**
  * Phase 2 storage without new DDL: shard into `personal_agents_store` rows.
@@ -199,6 +199,53 @@ export async function readUserProfileRow(ownerUserId: string): Promise<PersonalU
   const row = data?.data as StoredUser | undefined;
   if (!row || row.kind !== "user") return null;
   return row.userProfile ?? null;
+}
+
+/** O(1) read of one owner's MCP connections from `pa:u:…`. */
+export async function readUserConnections(ownerUserId: string): Promise<McpConnection[] | null> {
+  if (!supabaseStoreConfigured()) return null;
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", userRowId(ownerUserId))
+    .maybeSingle();
+  if (error) throw error;
+  const row = data?.data as StoredUser | undefined;
+  if (!row || row.kind !== "user") return null;
+  return row.connections ?? [];
+}
+
+/**
+ * Replace one owner's connections list on `pa:u:…` only (Zerodha connect/session).
+ * Avoids full-store rewrite that was starving the 45s Pramaan BFF budget.
+ */
+export async function writeUserConnections(ownerUserId: string, connections: McpConnection[]): Promise<void> {
+  if (!supabaseStoreConfigured()) {
+    throw new Error("Supabase store is not configured for connection-row write.");
+  }
+  const supabase = getSupabaseAdmin();
+  const rowId = userRowId(ownerUserId);
+  const { data: existing, error: readErr } = await supabase
+    .from(TABLE)
+    .select("data")
+    .eq("id", rowId)
+    .maybeSingle();
+  if (readErr) throw readErr;
+  const prev = existing?.data as StoredUser | undefined;
+  const payload: StoredUser = {
+    kind: "user",
+    ownerUserId,
+    userProfile: prev?.kind === "user" ? (prev.userProfile ?? null) : null,
+    files: prev?.kind === "user" ? (prev.files ?? []) : [],
+    memories: prev?.kind === "user" ? (prev.memories ?? []) : [],
+    vaultItems: prev?.kind === "user" ? (prev.vaultItems ?? []) : [],
+    connections,
+    orders: prev?.kind === "user" ? (prev.orders ?? []) : [],
+    slackThreads: prev?.kind === "user" ? (prev.slackThreads ?? {}) : {},
+  };
+  const error = await upsertRow(rowId, payload);
+  if (error) throw error;
 }
 
 /**
