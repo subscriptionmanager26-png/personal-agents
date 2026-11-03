@@ -300,3 +300,90 @@ export async function kiteLoggedInAs(ownerUserId: string) {
     return "your account";
   }
 }
+
+const NEEDS_LOGIN = /log ?in first|login required|not logged in|session (has )?expired|invalid (access )?token/i;
+
+export type KiteHoldingDraft = {
+  ticker: string;
+  qty: number;
+  avg?: number;
+  name?: string;
+};
+
+function parseHoldingsJson(text: string): {
+  rows: Record<string, unknown>[];
+  hasMore: boolean;
+} {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return { rows: [], hasMore: false };
+  }
+  if (Array.isArray(parsed)) return { rows: parsed as Record<string, unknown>[], hasMore: false };
+  if (!parsed || typeof parsed !== "object") return { rows: [], hasMore: false };
+  const obj = parsed as Record<string, unknown>;
+  const rowsRaw = obj.data ?? obj.holdings ?? obj.result;
+  const rows = Array.isArray(rowsRaw) ? (rowsRaw as Record<string, unknown>[]) : [];
+  const pagination =
+    obj.pagination && typeof obj.pagination === "object"
+      ? (obj.pagination as { has_more?: boolean; hasMore?: boolean })
+      : undefined;
+  const hasMore = Boolean(pagination?.has_more ?? pagination?.hasMore);
+  return { rows, hasMore };
+}
+
+function draftFromKiteRow(raw: Record<string, unknown>): KiteHoldingDraft | null {
+  const ticker = String(raw.tradingsymbol ?? raw.trading_symbol ?? raw.symbol ?? raw.ticker ?? "")
+    .trim()
+    .toUpperCase();
+  const qty = Number(raw.quantity ?? raw.qty ?? 0);
+  if (!ticker || !Number.isFinite(qty) || qty <= 0) return null;
+  const avg = Number(raw.average_price ?? raw.average ?? raw.avg ?? raw.avgPrice);
+  const name = typeof raw.name === "string" ? raw.name.trim() : undefined;
+  const draft: KiteHoldingDraft = { ticker, qty };
+  if (Number.isFinite(avg) && avg > 0) draft.avg = avg;
+  if (name) draft.name = name;
+  return draft;
+}
+
+/**
+ * Pull equity holdings via the client's Kite MCP session (same connection as Connect Zerodha).
+ * Paginates get_holdings when the hosted server returns has_more.
+ */
+export async function kiteHoldings(
+  ownerUserId: string,
+): Promise<{ holdings: KiteHoldingDraft[] } | { needsLogin: true; message: string }> {
+  if (!(await getKiteConnection(ownerUserId))) {
+    throw new Error("Zerodha is not connected.");
+  }
+  const t0 = Date.now();
+  const byTicker = new Map<string, KiteHoldingDraft>();
+  let from = 0;
+  const limit = 50;
+  for (let page = 0; page < 20; page++) {
+    const result = await kiteCall(ownerUserId, "get_holdings", { from, limit });
+    const text = toolResultText(result);
+    if (result.isError || NEEDS_LOGIN.test(text)) {
+      if (NEEDS_LOGIN.test(text) || /please log in/i.test(text)) {
+        return {
+          needsLogin: true,
+          message: "Log in to Zerodha, then fetch holdings again.",
+        };
+      }
+      throw new Error(text.slice(0, 200) || "Could not fetch holdings from Zerodha.");
+    }
+    const { rows, hasMore } = parseHoldingsJson(text);
+    for (const raw of rows) {
+      if (!raw || typeof raw !== "object") continue;
+      const draft = draftFromKiteRow(raw);
+      if (!draft) continue;
+      byTicker.set(draft.ticker, draft);
+    }
+    if (!hasMore || rows.length === 0) break;
+    from += limit;
+  }
+  const holdings = [...byTicker.values()].sort((a, b) => a.ticker.localeCompare(b.ticker));
+  console.info("[kite] holdings", { ownerUserId, ms: Date.now() - t0, count: holdings.length });
+  return { holdings };
+}
