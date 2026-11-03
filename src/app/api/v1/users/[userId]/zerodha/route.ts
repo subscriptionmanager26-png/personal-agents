@@ -2,8 +2,9 @@ import { apiError, readJson, requireApiUser } from "@/lib/api-auth";
 import { connectKite, disconnectKite, kiteLogin } from "@/lib/kite";
 
 export const dynamic = "force-dynamic";
-/** Connect opens a Kite MCP session then calls login — allow nested 30s RPCs. */
-export const maxDuration = 90;
+/** One initialize RPC + authorize URL — keep near Kite users. */
+export const maxDuration = 30;
+export const preferredRegion = ["bom1"];
 
 type Params = { params: Promise<{ userId: string }> };
 

@@ -102,13 +102,28 @@ async function openSession() {
   if (init.status !== 200 || !init.sessionId) {
     throw new Error(`Zerodha is not reachable right now (HTTP ${init.status}).`);
   }
-  // Best-effort notify — do not burn the connect budget if Zerodha is slow here.
-  await post(
+  // Fire-and-forget — do not wait on Zerodha for connect latency.
+  void post(
     init.sessionId,
     { jsonrpc: "2.0", method: "notifications/initialized" },
     SESSION_POST_MS,
   ).catch(() => undefined);
   return init.sessionId;
+}
+
+/**
+ * Hosted Kite MCP binds browser OAuth to the MCP session id (public api_key `kitemcp`).
+ * Building this URL after initialize avoids a second slow `login` tool round-trip.
+ * @see https://github.com/alexcpn/kite-mcp-client
+ */
+export function kiteAuthorizeUrlForSession(sessionId: string) {
+  const redirectParams = `session_id=${sessionId}`;
+  const qs = new URLSearchParams({
+    api_key: "kitemcp",
+    v: "3",
+    redirect_params: redirectParams,
+  });
+  return `https://kite.zerodha.com/connect/login?${qs.toString()}`;
 }
 
 function findKite(list: McpConnection[] | undefined, ownerUserId: string) {
@@ -263,27 +278,14 @@ function extractKiteLoginUrl(text: string): string | undefined {
 /** Zerodha's login link for this client's session, or who is already logged in. */
 export async function kiteLogin(ownerUserId: string): Promise<{ loggedInAs: string } | { url: string }> {
   const t0 = Date.now();
-  // Always mint a fresh MCP session for login. Reusing a stale session after a prior
-  // successful connect hangs ~30s then retries, which exceeds the Pramaan BFF timeout.
-  const raw = await kiteRequest(
-    ownerUserId,
-    "tools/call",
-    { name: "login", arguments: {} },
-    { preferFresh: true, timeoutMs: SESSION_POST_MS },
-  );
-  const result = (raw ?? { content: [] }) as ToolResult;
-  const text = toolResultText(result);
-  console.info("[kite] login", { ownerUserId, ms: Date.now() - t0, isError: result.isError });
-  const already = text.match(/already logged in as (.+)$/im);
-  if (already) return { loggedInAs: already[1].trim() };
-  const url = extractKiteLoginUrl(text);
-  if (!url) {
-    console.error("[kite] login tool returned no usable URL", {
-      isError: result.isError,
-      preview: text.slice(0, 240),
-    });
+  // Fresh MCP session + construct authorize URL (one RPC). Calling the `login` tool
+  // used to add a second 10–30s round-trip and made Connect feel broken.
+  const sessionId = await sessionFor(ownerUserId, true);
+  const url = kiteAuthorizeUrlForSession(sessionId);
+  if (!safeKiteLoginUrl(url)) {
     throw new Error("Zerodha did not return a login link. Try again in a minute.");
   }
+  console.info("[kite] login", { ownerUserId, ms: Date.now() - t0, mode: "session_url" });
   return { url };
 }
 
