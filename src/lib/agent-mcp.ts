@@ -201,6 +201,14 @@ const UI_TOOLS: McpTool[] = [
               qty: { type: "number", minimum: 0, description: "Units held (0 removes on merge)." },
               avg: { type: "number", description: "Average cost per unit in INR, if known" },
               name: { type: "string" },
+              source: {
+                type: "string",
+                description: "Where the line came from: zerodha, manual, upload, or agent.",
+              },
+              assetType: {
+                type: "string",
+                description: "equity | fund | etf | commodity when known.",
+              },
             },
           },
         },
@@ -425,6 +433,10 @@ async function callUiTool(ownerUserId: string, jobId: string, name: string, args
         if (typeof r.avg === "number" && Number.isFinite(r.avg) && r.avg > 0) draft.avg = r.avg;
         const name = str(r.name)?.trim();
         if (name) draft.name = name.slice(0, 120);
+        const source = str(r.source)?.trim().toLowerCase();
+        if (source) draft.source = source.slice(0, 32);
+        const assetType = str(r.assetType ?? r.asset_type)?.trim().toLowerCase();
+        if (assetType) draft.assetType = assetType.slice(0, 32);
         // Last row wins for duplicate tickers so CSV re-exports stay predictable.
         byTicker.set(ticker, draft);
       }

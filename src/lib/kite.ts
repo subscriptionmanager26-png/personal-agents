@@ -305,6 +305,9 @@ export type KiteHoldingDraft = {
   qty: number;
   avg?: number;
   name?: string;
+  /** Where the line came from — persisted on the portfolio book. */
+  source?: string;
+  assetType?: string;
 };
 
 function parseHoldingsJson(text: string): Record<string, unknown>[] {
@@ -321,28 +324,53 @@ function parseHoldingsJson(text: string): Record<string, unknown>[] {
   return Array.isArray(rowsRaw) ? (rowsRaw as Record<string, unknown>[]) : [];
 }
 
-function draftFromKiteRow(raw: Record<string, unknown>): KiteHoldingDraft | null {
+function draftFromEquityRow(raw: Record<string, unknown>): KiteHoldingDraft | null {
   const ticker = String(raw.tradingsymbol ?? raw.trading_symbol ?? raw.symbol ?? raw.ticker ?? "")
     .trim()
     .toUpperCase();
-  // Kite net qty can include t1; prefer quantity, fall back to realised+t1.
-  const qty = Number(
-    raw.quantity ??
-      raw.qty ??
-      (Number(raw.realised_quantity ?? 0) + Number(raw.t1_quantity ?? 0) || 0),
-  );
+  const realised = Number(raw.realised_quantity ?? 0);
+  const t1 = Number(raw.t1_quantity ?? 0);
+  const qty = Number(raw.quantity ?? raw.qty ?? (Number.isFinite(realised) || Number.isFinite(t1) ? realised + t1 : 0));
   if (!ticker || !Number.isFinite(qty) || qty <= 0) return null;
   const avg = Number(raw.average_price ?? raw.average ?? raw.avg ?? raw.avgPrice);
   const name = typeof raw.name === "string" ? raw.name.trim() : undefined;
-  const draft: KiteHoldingDraft = { ticker, qty };
+  const draft: KiteHoldingDraft = { ticker, qty, source: "zerodha", assetType: "equity" };
   if (Number.isFinite(avg) && avg > 0) draft.avg = avg;
   if (name) draft.name = name;
   return draft;
 }
 
+/** Coin / demat mutual funds from get_mf_holdings (tradingsymbol is usually an ISIN). */
+function draftFromMfRow(raw: Record<string, unknown>): KiteHoldingDraft | null {
+  const ticker = String(raw.tradingsymbol ?? raw.trading_symbol ?? raw.isin ?? "")
+    .trim()
+    .toUpperCase();
+  const qty = Number(raw.quantity ?? raw.qty ?? 0);
+  if (!ticker || !Number.isFinite(qty) || qty <= 0) return null;
+  const avg = Number(raw.average_price ?? raw.average ?? raw.avg);
+  const fund = typeof raw.fund === "string" ? raw.fund.trim() : undefined;
+  const name = fund || (typeof raw.name === "string" ? raw.name.trim() : undefined);
+  const folio = raw.folio != null && String(raw.folio).trim() ? String(raw.folio).trim() : "";
+  // Folio can distinguish the same scheme held under different folios.
+  const key = folio ? `${ticker}:${folio}` : ticker;
+  const draft: KiteHoldingDraft = {
+    ticker: key,
+    qty,
+    source: "zerodha",
+    assetType: "fund",
+  };
+  if (Number.isFinite(avg) && avg > 0) draft.avg = avg;
+  if (name) draft.name = name;
+  return draft;
+}
+
+function callNeedsLogin(result: ToolResult, text: string) {
+  return Boolean(result.isError || NEEDS_LOGIN.test(text));
+}
+
 /**
- * Pull equity holdings via the client's Kite MCP session (same connection as Connect Zerodha).
- * Omits pagination args so Kite returns the full list in one call.
+ * Pull equity + mutual-fund holdings via the client's Kite MCP session
+ * (`get_holdings` + `get_mf_holdings`). Same connection as Connect Zerodha.
  */
 export async function kiteHoldings(
   ownerUserId: string,
@@ -351,28 +379,64 @@ export async function kiteHoldings(
     throw new Error("Zerodha is not connected.");
   }
   const t0 = Date.now();
-  // Empty args → full holdings array (limit would wrap pagination metadata).
-  const result = await kiteCall(ownerUserId, "get_holdings", {});
-  const text = toolResultText(result);
-  if (result.isError || NEEDS_LOGIN.test(text)) {
+  const equityResult = await kiteCall(ownerUserId, "get_holdings", {});
+  const equityText = toolResultText(equityResult);
+  if (callNeedsLogin(equityResult, equityText)) {
     console.info("[kite] holdings need login", {
       ownerUserId,
       ms: Date.now() - t0,
-      preview: text.slice(0, 160),
+      preview: equityText.slice(0, 160),
     });
     return {
       needsLogin: true,
       message: "Your Zerodha session expired. Log in again, then fetch holdings.",
     };
   }
-  const byTicker = new Map<string, KiteHoldingDraft>();
-  for (const raw of parseHoldingsJson(text)) {
+
+  const byKey = new Map<string, KiteHoldingDraft>();
+  for (const raw of parseHoldingsJson(equityText)) {
     if (!raw || typeof raw !== "object") continue;
-    const draft = draftFromKiteRow(raw);
+    const draft = draftFromEquityRow(raw);
     if (!draft) continue;
-    byTicker.set(draft.ticker, draft);
+    byKey.set(draft.ticker, draft);
   }
-  const holdings = [...byTicker.values()].sort((a, b) => a.ticker.localeCompare(b.ticker));
-  console.info("[kite] holdings", { ownerUserId, ms: Date.now() - t0, count: holdings.length });
+
+  // MF is a separate Coin book — soft-fail so equity still imports if MF errors.
+  try {
+    const mfResult = await kiteCall(ownerUserId, "get_mf_holdings", {});
+    const mfText = toolResultText(mfResult);
+    if (callNeedsLogin(mfResult, mfText)) {
+      console.info("[kite] mf holdings skipped (login/session)", {
+        ownerUserId,
+        preview: mfText.slice(0, 120),
+      });
+    } else {
+      for (const raw of parseHoldingsJson(mfText)) {
+        if (!raw || typeof raw !== "object") continue;
+        const draft = draftFromMfRow(raw);
+        if (!draft) continue;
+        byKey.set(draft.ticker, draft);
+      }
+    }
+  } catch (error) {
+    console.error("[kite] mf holdings failed", {
+      ownerUserId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const holdings = [...byKey.values()].sort((a, b) => {
+    const at = a.assetType === "fund" ? 1 : 0;
+    const bt = b.assetType === "fund" ? 1 : 0;
+    if (at !== bt) return at - bt;
+    return a.ticker.localeCompare(b.ticker);
+  });
+  console.info("[kite] holdings", {
+    ownerUserId,
+    ms: Date.now() - t0,
+    count: holdings.length,
+    equity: holdings.filter((h) => h.assetType !== "fund").length,
+    funds: holdings.filter((h) => h.assetType === "fund").length,
+  });
   return { holdings };
 }

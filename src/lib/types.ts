@@ -70,6 +70,9 @@ export type PortfolioHoldingDraft = {
   /** Average cost per unit in INR, when known. */
   avg?: number;
   name?: string;
+  /** Origin of the line: zerodha | manual | upload | agent */
+  source?: string;
+  assetType?: string;
 };
 
 export type ActionRequired =
