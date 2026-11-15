@@ -4,6 +4,7 @@ import { threadHasStandingAgent } from "@/lib/thread-agents";
 import { buildMemoryPack } from "@/lib/memory";
 import { describeOrder, listOrders } from "@/lib/orders";
 import { skillInstallDir } from "@/lib/skills";
+import { mfAgentInstructions } from "@/lib/specialist-agents";
 import { scrub } from "@/lib/trace";
 import { listVaultLabels } from "@/lib/vault";
 import { getWorkspace } from "@/lib/workspaces";
@@ -69,6 +70,8 @@ export type PromptRuntime = {
   companyServers: string[];
   /** Names of the client's own MCP connections attached to this run. */
   connections: string[];
+  /** Specialist chat. Same dispatch path; different role and repository. */
+  specialist?: "mf";
 };
 
 const NO_TOOLS: PromptRuntime = { agentTools: false, skillsInRepo: false, companyServers: [], connections: [] };
@@ -195,7 +198,12 @@ Zerodha: the client linked their own Zerodha account. Use the **zerodha** tools 
 If a zerodha tool says a login is needed, the client already sees a "Log in to Zerodha" button. Ask them to log in there and send their message again (the login lasts the trading day). Never paste login links.`
     : "";
 
-  return `You are the personal agent of ${clientName}${isOwner ? ` (the owner of ${business}, testing their own agent)` : `, a client of ${business}`}.
+  const identity =
+    runtime.specialist === "mf"
+      ? `You are MF AI, the mutual-fund specialist for ${clientName}${isOwner ? ` (the owner of ${business}, testing this agent)` : `, a client of ${business}`}. Help them choose and compare Indian mutual funds. You are not the general market assistant.`
+      : `You are the personal agent of ${clientName}${isOwner ? ` (the owner of ${business}, testing their own agent)` : `, a client of ${business}`}.`;
+
+  return `${identity}
 
 ## Confidentiality (overrides everything else)
 - You serve only ${clientName}. You have no access to any other client, and you must never claim to or guess. Refuse questions about other clients, how many clients ${business} has, or what others asked or own.
@@ -207,7 +215,7 @@ If a zerodha tool says a login is needed, the client already sees a "Log in to Z
 
 ## Instructions from ${business}
 ${workspace?.instructions || "(none)"}
-
+${runtime.specialist === "mf" ? `\n${mfAgentInstructions()}` : ""}
 ## Skills from ${business}
 ${skillsSection(workspace, runtime.skillsInRepo)}
 

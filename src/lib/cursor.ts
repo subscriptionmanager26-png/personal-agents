@@ -22,6 +22,7 @@ import { buildPersonalAgentPrompt } from "@/lib/prompt";
 import { assignRunsToJobs, finalAssistantTextsByTurn } from "@/lib/run-binding";
 import { createMemoryToken } from "@/lib/run-token";
 import { runtimeFor, runtimeForUserId, type AgentRuntime } from "@/lib/runtime";
+import { specialistForThread } from "@/lib/specialist-agents";
 import { getStoreFresh } from "@/lib/store";
 import { createVaultJobToken, listVaultLabels } from "@/lib/vault";
 import {
@@ -281,7 +282,9 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   }
 
   // Pocketedge API clients (externalId) share the company workspace — no per-user GitHub repo.
-  const withRepo = Boolean(rt.githubToken) && !latest.externalId;
+  // Specialist threads (MF) still get their own shared repo on the same createAgent call.
+  const specialist = specialistForThread(job.webThreadId);
+  const withRepo = !specialist && Boolean(rt.githubToken) && !latest.externalId;
   let current = latest;
   let skillsInRepo = false;
   if (withRepo) {
@@ -297,7 +300,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
       // fall back to inlining the skills in the prompt
     }
   }
-  const hash = `${skillsHash(workspace)}:${withRepo ? "repo" : "no-repo"}`;
+  const hash = `${skillsHash(workspace)}:${specialist?.kind ?? (withRepo ? "repo" : "no-repo")}`;
   const mcp = await buildMcpServers(current, job, workspace, rt, withRepo);
   const promptText = await buildPersonalAgentPrompt(current, job, {
     agentTools: mcp.agentTools,
@@ -306,6 +309,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     skillsInRepo,
     companyServers: mcp.companyServers,
     connections: mcp.connections,
+    specialist: specialist?.kind,
   });
 
   // Prefer the standing thread agent. skillsHash mismatch no longer forces a new agent.
@@ -365,12 +369,14 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
       withRepo ? current : undefined,
       promptText,
       mcp.servers,
+      specialist ? { url: specialist.url, ref: specialist.ref } : undefined,
     );
     console.info("[dispatch] createAgent", {
       jobId: job.id,
       threadId: job.webThreadId ?? "main",
       agentId: created.agentId,
       runId: created.runId,
+      repository: specialist?.url ?? (withRepo ? current.agentRepository : undefined) ?? null,
     });
     await patchJob(job.id, current.id, {
       status: "dispatched",
@@ -434,21 +440,23 @@ export async function ensureJobRunBinding(job: Job, agentId: string): Promise<Jo
   return (await getJob(job.id, { fresh: true })) ?? job;
 }
 
-/** `repoUser` set: the agent works in that user's repo. Unset: a no-repo agent. */
+/** `repoUser` set: the agent works in that user's repo. `repoOverride` is a shared specialist repo. Unset: a no-repo agent. */
 async function createAgent(
   key: string,
   repoUser: PersonalUser | undefined,
   promptText: string,
   mcpServers: McpServerDef[],
+  repoOverride?: { url: string; ref: string },
 ) {
   const cfg = getConfig();
-  const repository = repoUser?.agentRepository;
+  const repository = repoOverride?.url || repoUser?.agentRepository;
+  const ref = repoOverride?.ref || repoUser?.agentRef || "main";
 
   const v1 = await cursorPost(key, "/v1/agents", {
     prompt: { text: promptText },
     ...(repository
       ? {
-          repos: [{ url: repository, startingRef: repoUser.agentRef || "main" }],
+          repos: [{ url: repository, startingRef: ref }],
           autoCreatePR: false,
           skipReviewerRequest: true,
         }
@@ -465,7 +473,7 @@ async function createAgent(
 
   const v0Body: Record<string, unknown> = {
     prompt: { text: promptText },
-    source: { repository, ref: repoUser.agentRef || "main" },
+    source: { repository, ref },
     target: { autoCreatePr: false },
   };
   if (cfg.cursorStatusWebhookUrl && cfg.cursorStatusWebhookSecret) {
