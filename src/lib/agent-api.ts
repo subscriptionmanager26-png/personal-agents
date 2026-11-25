@@ -29,13 +29,22 @@ function streamHasBlocks(job: Job) {
   return (job.stream ?? []).some((e) => e.type === "block");
 }
 
+export const SUPERSEDED_TURN =
+  "This message was interrupted before it finished. Ask again if you need the rest.";
+
 function isFalseBusyError(error?: string) {
   if (!error) return false;
   return (
     /still working on the previous message/i.test(error) ||
     /interrupted before it finished/i.test(error) ||
-    /stopped so you could send/i.test(error)
+    /stopped so you could send/i.test(error) ||
+    /superseded by a new message/i.test(error)
   );
+}
+
+function isSupersededJob(job: Job) {
+  if (job.status !== "error") return false;
+  return isFalseBusyError(job.error);
 }
 
 /**
@@ -51,6 +60,7 @@ function viewStatus(job: Job): MessageView["status"] {
   if (job.status === "replied") return "completed";
   // Display-heal: never show the false busy banner when cards/charts already landed.
   if (isFalseBusyWithUi(job)) return "completed";
+  if (isSupersededJob(job)) return "completed";
   if (job.status === "error") return "failed";
   const stream = job.stream ?? [];
   if (stream.some((e) => e.type === "done")) return "completed";
@@ -108,7 +118,10 @@ export function messageView(job: Job): MessageView {
     completedAt,
     blocks: blocksForJob(job),
     actions: stream.flatMap((e) => (e.type === "action_required" ? [clientAction(e.action)] : [])),
-    error: job.status === "error" && !isFalseBusyWithUi(job) ? clientError(job.error) : undefined,
+    error:
+      job.status === "error" && !isFalseBusyWithUi(job) && !isSupersededJob(job)
+        ? clientError(job.error)
+        : undefined,
     clientSendId: job.clientSendId,
   };
 }
@@ -127,7 +140,10 @@ function safeMessageView(job: Job): MessageView {
       completedAt: job.status === "replied" ? job.reply?.receivedAt : undefined,
       blocks: [],
       actions: [],
-      error: job.status === "error" && !isFalseBusyWithUi(job) ? clientError(job.error) : undefined,
+      error:
+      job.status === "error" && !isFalseBusyWithUi(job) && !isSupersededJob(job)
+        ? clientError(job.error)
+        : undefined,
       clientSendId: job.clientSendId,
     };
   }

@@ -98,15 +98,6 @@ export async function enqueueChat(input: {
 
   const { id: ownerUserId } = input.user;
   await releaseThreadForNewMessageFast(ownerUserId, input.source, threadId);
-  after(() => {
-    void releaseThreadForNewMessageDeferred(ownerUserId, input.source, threadId).catch((error) => {
-      console.error("[enqueueChat] releaseThread deferred failed", {
-        ownerUserId,
-        threadId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  });
 
   let user = input.user;
   if (input.source === "web") {
@@ -124,6 +115,19 @@ export async function enqueueChat(input: {
     prompt: text,
     clientSendId: clientSendId || undefined,
     attachments: resolved.files.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
+  });
+
+  after(() => {
+    void releaseThreadForNewMessageDeferred(ownerUserId, input.source, threadId, {
+      exceptJobId: job.id,
+    }).catch((error) => {
+      console.error("[enqueueChat] releaseThread deferred failed", {
+        ownerUserId,
+        threadId,
+        exceptJobId: job.id,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
   });
 
   await scheduleDispatch(user, job);

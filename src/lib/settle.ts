@@ -575,21 +575,25 @@ export async function releaseThreadForNewMessageDeferred(
   ownerUserId: string,
   source: JobSource,
   threadId: string,
+  opts?: { exceptJobId?: string },
 ): Promise<void> {
-  let active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
+  const keep = opts?.exceptJobId?.trim();
+  const skip = (job: Job) => Boolean(keep && job.id === keep);
+
+  let active = (await reconcileActiveJobsInThread(ownerUserId, source, threadId)).filter((j) => !skip(j));
   if (!active.length) return;
 
   for (const job of active) {
     await settleIfFinished(job).catch(() => undefined);
   }
 
-  active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
+  active = (await reconcileActiveJobsInThread(ownerUserId, source, threadId)).filter((j) => !skip(j));
   for (const job of active) {
     await settleJob(job.id, job.ownerUserId).catch(() => undefined);
     await ensureFullReply((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
   }
 
-  active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
+  active = (await reconcileActiveJobsInThread(ownerUserId, source, threadId)).filter((j) => !skip(j));
   for (const job of active) {
     if (job.cursorAgentId && job.cursorRunId) {
       try {
@@ -605,7 +609,7 @@ export async function releaseThreadForNewMessageDeferred(
     await ensureFullReply((await getJob(job.id, { fresh: true })) ?? job).catch(() => undefined);
   }
 
-  active = await reconcileActiveJobsInThread(ownerUserId, source, threadId);
+  active = (await reconcileActiveJobsInThread(ownerUserId, source, threadId)).filter((j) => !skip(j));
   for (const job of active) {
     const fresh = (await getJob(job.id, { fresh: true })) ?? job;
     if (fresh.status === "replied" && fresh.reply?.message?.trim()) continue;
