@@ -2,7 +2,7 @@ import { after } from "next/server";
 
 import { dispatchJob } from "@/lib/cursor";
 import { createJob, findJobByClientSendId, patchJob } from "@/lib/jobs";
-import { releaseThreadForNewMessage } from "@/lib/settle";
+import { releaseThreadForNewMessageDeferred, releaseThreadForNewMessageFast } from "@/lib/settle";
 import { resolveAttachments } from "@/lib/files";
 import { ensurePersonalRepo } from "@/lib/github";
 import { tablesEnqueueDispatch, tablesMarkDispatchDone, tablesStoreEnabled } from "@/lib/store-tables";
@@ -96,7 +96,17 @@ export async function enqueueChat(input: {
     }
   }
 
-  await releaseThreadForNewMessage(input.user.id, input.source, threadId);
+  const { id: ownerUserId } = input.user;
+  await releaseThreadForNewMessageFast(ownerUserId, input.source, threadId);
+  after(() => {
+    void releaseThreadForNewMessageDeferred(ownerUserId, input.source, threadId).catch((error) => {
+      console.error("[enqueueChat] releaseThread deferred failed", {
+        ownerUserId,
+        threadId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
 
   let user = input.user;
   if (input.source === "web") {

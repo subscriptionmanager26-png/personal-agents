@@ -502,7 +502,76 @@ export async function ensureFullReply(job: Job): Promise<Job> {
   }
 }
 
+const SUPERSEDED_DETAIL = "Superseded by a new message";
+const SUPERSEDED_ERROR =
+  "This message was interrupted before it finished. Ask again if you need the rest.";
+
+/** List in-flight jobs without Cursor reconcile (fast path for enqueue POST). */
+async function listActiveJobsInThreadLight(
+  ownerUserId: string,
+  source: JobSource,
+  threadId: string,
+): Promise<Job[]> {
+  const { tablesListJobsForThread, tablesStoreEnabled } = await import("@/lib/store-tables");
+  const { listJobRowsForThread, relationalStoreEnabled } = await import("@/lib/store-relational");
+  let candidates: Job[] = [];
+  if (tablesStoreEnabled()) {
+    try {
+      candidates = await tablesListJobsForThread(ownerUserId, source, threadId, 25);
+    } catch {
+      candidates = [];
+    }
+  }
+  if (!candidates.length && relationalStoreEnabled()) {
+    try {
+      candidates = await listJobRowsForThread(ownerUserId, source, threadId, 25);
+    } catch {
+      candidates = [];
+    }
+  }
+  if (!candidates.length) {
+    const store = await getStoreFresh();
+    candidates = sortedJobsForUser(store, ownerUserId)
+      .filter((j) => (j.source ?? "web") === source && (j.webThreadId ?? "main") === threadId)
+      .slice(0, 25);
+  }
+  return candidates.filter((j) => ACTIVE_JOB.has(j.status));
+}
+
+/**
+ * Mark prior in-flight jobs superseded so a new message can enqueue immediately.
+ * Cursor cancel/settle runs in {@link releaseThreadForNewMessageDeferred} (after POST returns).
+ */
+export async function releaseThreadForNewMessageFast(
+  ownerUserId: string,
+  source: JobSource,
+  threadId: string,
+): Promise<void> {
+  const active = await listActiveJobsInThreadLight(ownerUserId, source, threadId);
+  if (!active.length) return;
+  await Promise.all(
+    active.map((job) =>
+      patchJob(job.id, job.ownerUserId, {
+        status: "error",
+        error: SUPERSEDED_ERROR,
+        event: { type: "error", detail: SUPERSEDED_DETAIL },
+      }).catch(() => undefined),
+    ),
+  );
+}
+
+/** @deprecated await path — use fast + deferred. Kept as alias for tests/callers. */
 export async function releaseThreadForNewMessage(
+  ownerUserId: string,
+  source: JobSource,
+  threadId: string,
+): Promise<void> {
+  await releaseThreadForNewMessageFast(ownerUserId, source, threadId);
+  await releaseThreadForNewMessageDeferred(ownerUserId, source, threadId);
+}
+
+/** Best-effort Cursor cancel + settle after fast supersede (never block enqueue POST). */
+export async function releaseThreadForNewMessageDeferred(
   ownerUserId: string,
   source: JobSource,
   threadId: string,
@@ -543,8 +612,8 @@ export async function releaseThreadForNewMessage(
     if (fresh.status === "error") continue;
     await patchJob(job.id, job.ownerUserId, {
       status: "error",
-      error: "This message was interrupted before it finished. Ask again if you need the rest.",
-      event: { type: "error", detail: "Superseded by a new message" },
+      error: SUPERSEDED_ERROR,
+      event: { type: "error", detail: SUPERSEDED_DETAIL },
     });
   }
 }
