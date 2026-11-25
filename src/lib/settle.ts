@@ -307,13 +307,9 @@ export async function reconcileActiveJobsInThread(
   source: JobSource,
   threadId: string,
 ): Promise<Job[]> {
-  const store = await getStoreFresh();
-  const jobs = sortedJobsForUser(store, ownerUserId).filter(
-    (j) => (j.source ?? "web") === source && (j.webThreadId ?? "main") === threadId,
-  );
+  const jobs = await listActiveJobsInThreadLight(ownerUserId, source, threadId);
   const stillActive: Job[] = [];
-  for (const job of jobs.slice(0, 25)) {
-    if (!ACTIVE_JOB.has(job.status)) continue;
+  for (const job of jobs) {
     const row = await reconcileJob(job);
     if (ACTIVE_JOB.has(row.status)) stillActive.push(row);
   }
@@ -514,28 +510,33 @@ async function listActiveJobsInThreadLight(
 ): Promise<Job[]> {
   const { tablesListJobsForThread, tablesStoreEnabled } = await import("@/lib/store-tables");
   const { listJobRowsForThread, relationalStoreEnabled } = await import("@/lib/store-relational");
-  let candidates: Job[] = [];
-  if (tablesStoreEnabled()) {
-    try {
-      candidates = await tablesListJobsForThread(ownerUserId, source, threadId, 25);
-    } catch {
-      candidates = [];
+  const sources: JobSource[] = source === "slack" ? ["slack"] : ["api", "web"];
+  const merged = new Map<string, Job>();
+  for (const src of sources) {
+    let candidates: Job[] = [];
+    if (tablesStoreEnabled()) {
+      try {
+        candidates = await tablesListJobsForThread(ownerUserId, src, threadId, 25);
+      } catch {
+        candidates = [];
+      }
     }
-  }
-  if (!candidates.length && relationalStoreEnabled()) {
-    try {
-      candidates = await listJobRowsForThread(ownerUserId, source, threadId, 25);
-    } catch {
-      candidates = [];
+    if (!candidates.length && relationalStoreEnabled()) {
+      try {
+        candidates = await listJobRowsForThread(ownerUserId, src, threadId, 25);
+      } catch {
+        candidates = [];
+      }
     }
+    if (!candidates.length) {
+      const store = await getStoreFresh();
+      candidates = sortedJobsForUser(store, ownerUserId)
+        .filter((j) => (j.source ?? "web") === src && (j.webThreadId ?? "main") === threadId)
+        .slice(0, 25);
+    }
+    for (const j of candidates) merged.set(j.id, j);
   }
-  if (!candidates.length) {
-    const store = await getStoreFresh();
-    candidates = sortedJobsForUser(store, ownerUserId)
-      .filter((j) => (j.source ?? "web") === source && (j.webThreadId ?? "main") === threadId)
-      .slice(0, 25);
-  }
-  return candidates.filter((j) => ACTIVE_JOB.has(j.status));
+  return [...merged.values()].filter((j) => ACTIVE_JOB.has(j.status));
 }
 
 /**

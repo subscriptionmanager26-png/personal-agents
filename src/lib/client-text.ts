@@ -40,12 +40,17 @@ export function clientText(text: string | undefined | null) {
 
 const INTERNAL_ERROR = /cursor|github|\brepo\b|http\s*\d{3}|\bbc-|api key|token|fetch failed|econn|status [A-Z_]+$/i;
 const NEVER_STARTED = /agent never started|never started\.?\s*please send/i;
+const USAGE_LIMIT =
+  /usage_limit_exceeded|monthly additional usage limit|prepaid credits are still available/i;
 
 export function clientError(message: string | undefined) {
   if (!message) return "Your assistant could not finish this message. Please try again.";
   // Queued job that never got a run — user's text is fine; the reply side failed to start.
   if (NEVER_STARTED.test(message)) {
     return "No reply was started for this message (timed out before the agent ran). Send it again.";
+  }
+  if (USAGE_LIMIT.test(message)) {
+    return "The agent platform hit its monthly usage cap for this workspace. Raises the limit in Cursor billing or wait until the 1st (UTC) for the cap to reset, then send again.";
   }
   return INTERNAL_ERROR.test(message)
     ? "Your assistant could not finish this message. Please try again."

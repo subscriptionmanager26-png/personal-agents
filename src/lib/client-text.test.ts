@@ -35,6 +35,10 @@ test("internal errors are replaced, plain ones are kept", () => {
   assert.match(clientError("Cursor create failed (HTTP 401): bad key"), /could not finish/);
   assert.match(clientError("Agent run ended with status ERROR"), /could not finish/);
   assert.equal(clientError("Your account is waiting for approval."), "Your account is waiting for approval.");
+  assert.match(
+    clientError('Cursor create failed: {"error":{"code":"usage_limit_exceeded"}}'),
+    /monthly usage cap/i,
+  );
 });
 
 test("stream events and traces are filtered", () => {

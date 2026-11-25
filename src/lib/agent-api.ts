@@ -157,37 +157,47 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
     relationalStoreEnabled,
   } = await import("@/lib/store-relational");
 
-  let candidates: Job[] = [];
-  const { tablesListJobsForThread, tablesStoreEnabled } = await import("@/lib/store-tables");
-  if (tablesStoreEnabled() && opts.threadId) {
-    try {
-      candidates = await tablesListJobsForThread(ownerUserId, opts.source, opts.threadId, limit);
-    } catch {
-      candidates = [];
+  const threadSources: Job["source"][] =
+    opts.threadId && opts.source !== "slack" ? (["api", "web"] as const) : [opts.source];
+
+  const merged = new Map<string, Job>();
+  for (const src of threadSources) {
+    let candidates: Job[] = [];
+    const { tablesListJobsForThread, tablesStoreEnabled } = await import("@/lib/store-tables");
+    if (tablesStoreEnabled() && opts.threadId) {
+      try {
+        candidates = await tablesListJobsForThread(ownerUserId, src, opts.threadId, limit);
+      } catch {
+        candidates = [];
+      }
     }
-  }
-  if (!candidates.length && relationalStoreEnabled()) {
-    try {
-      candidates = opts.threadId
-        ? await listJobRowsForThread(ownerUserId, opts.source, opts.threadId, limit)
-        : (await listJobRowsForUser(ownerUserId, Math.min(limit * 3, 100))).filter((j) => j.source === opts.source).slice(0, limit);
-    } catch {
-      candidates = [];
+    if (!candidates.length && relationalStoreEnabled()) {
+      try {
+        candidates = opts.threadId
+          ? await listJobRowsForThread(ownerUserId, src, opts.threadId, limit)
+          : (await listJobRowsForUser(ownerUserId, Math.min(limit * 3, 100)))
+              .filter((j) => j.source === src)
+              .slice(0, limit);
+      } catch {
+        candidates = [];
+      }
     }
-  }
-  if (!candidates.length) {
-    const store = await getStoreFresh();
-    const scanCap = opts.threadId ? 400 : 250;
-    let examined = 0;
-    for (const job of sortedJobsForUser(store, ownerUserId)) {
-      examined += 1;
-      if (examined > scanCap) break;
-      if (job.source !== opts.source) continue;
-      if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
-      candidates.push(job);
-      if (candidates.length >= limit) break;
+    if (!candidates.length) {
+      const store = await getStoreFresh();
+      const scanCap = opts.threadId ? 400 : 250;
+      let examined = 0;
+      for (const job of sortedJobsForUser(store, ownerUserId)) {
+        examined += 1;
+        if (examined > scanCap) break;
+        if (job.source !== src) continue;
+        if (opts.threadId && (job.webThreadId ?? "main") !== opts.threadId) continue;
+        candidates.push(job);
+        if (candidates.length >= limit) break;
+      }
     }
+    for (const job of candidates) merged.set(job.id, job);
   }
+  let candidates = [...merged.values()];
 
   // Snapshot only — never await Cursor reconcile/dispatch here. That blocked
   // chat-state open for minutes when a queued job re-entered dispatchJob.
