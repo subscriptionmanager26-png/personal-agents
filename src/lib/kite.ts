@@ -1,4 +1,5 @@
 import { decryptSecret, encryptSecret, randomId } from "@/lib/crypto";
+import { kiteMcpAuthErrorMessage, kiteMcpBearer } from "@/lib/kite-mcp-oauth";
 import type { McpTool, ToolResult } from "@/lib/mcp-server";
 import { getStoreFresh, updateStore } from "@/lib/store";
 import {
@@ -52,12 +53,18 @@ async function post(
   timeoutMs = POST_MS,
 ) {
   const t0 = Date.now();
+  const bearer = await kiteMcpBearer();
+  if (!bearer && kiteUrl().includes("mcp.kite.trade")) {
+    const hint = (await kiteMcpAuthErrorMessage()) || "Kite MCP bearer token is missing.";
+    throw new Error(hint);
+  }
   const res = await fetch(kiteUrl(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       "Mcp-Protocol-Version": PROTOCOL,
+      ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
       ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
     },
     body: JSON.stringify(payload),
@@ -80,7 +87,19 @@ async function post(
     body = undefined;
   }
   const method = typeof payload.method === "string" ? payload.method : "rpc";
-  console.info("[kite] rpc", { method, status: res.status, ms: Date.now() - t0, hasSession: Boolean(sessionId) });
+  console.info("[kite] rpc", {
+    method,
+    status: res.status,
+    ms: Date.now() - t0,
+    hasSession: Boolean(sessionId),
+    hasBearer: Boolean(bearer),
+  });
+  if (res.status === 401 && kiteUrl().includes("mcp.kite.trade")) {
+    throw new Error(
+      (await kiteMcpAuthErrorMessage()) ||
+        "Kite MCP rejected the bearer token. Complete OAuth setup on the agent backend.",
+    );
+  }
   return { status: res.status, body, sessionId: res.headers.get("mcp-session-id") ?? undefined };
 }
 
@@ -166,9 +185,13 @@ export async function disconnectKite(ownerUserId: string) {
   if (!conn) return;
   if (conn.sessionEnc) {
     // Ends the Kite session on Zerodha's side too; best-effort.
+    const bearer = await kiteMcpBearer().catch(() => undefined);
     await fetch(kiteUrl(), {
       method: "DELETE",
-      headers: { "Mcp-Session-Id": decryptSecret(conn.sessionEnc, PURPOSE, ownerUserId) },
+      headers: {
+        ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}),
+        "Mcp-Session-Id": decryptSecret(conn.sessionEnc, PURPOSE, ownerUserId),
+      },
       signal: AbortSignal.timeout(10_000),
     }).catch(() => undefined);
   }
