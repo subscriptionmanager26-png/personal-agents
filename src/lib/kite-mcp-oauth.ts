@@ -13,16 +13,72 @@ const MCP_RESOURCE = "https://mcp.kite.trade/mcp";
 type StoredKiteMcpOAuth = {
   kind: "kite_mcp_oauth";
   clientId?: string;
+  /** Fingerprint of redirect_uris used at registration time. */
+  registeredRedirectUris?: string;
   accessTokenEnc?: string;
+  refreshTokenEnc?: string;
   /** Epoch ms when access token expires (Kite MCP bearer ~24h). */
   expiresAt?: number;
-  pending?: { state: string; codeVerifier: string; at: number };
+  pending?: { state: string; codeVerifier: string; at: number; redirectUri: string };
 };
 
-function publicRedirectUri() {
-  const base = getConfig().publicUrl.replace(/\/$/, "");
-  if (!base) throw new Error("PUBLIC_URL is not set.");
-  return `${base}/api/admin/kite-mcp/oauth/callback`;
+function trimUrl(base: string) {
+  return base.replace(/\/$/, "");
+}
+
+const POCKETEDGE_CALLBACK_PATH = "/api/agent/kite-mcp/oauth-callback";
+
+function addPocketedgeCallbackOrigin(uris: Set<string>, origin: string) {
+  const base = trimUrl(origin);
+  if (!base.startsWith("http")) return;
+  uris.add(`${base}${POCKETEDGE_CALLBACK_PATH}`);
+  try {
+    const u = new URL(base);
+    const host = u.hostname;
+    if (host.startsWith("www.")) {
+      uris.add(`${u.protocol}//${host.slice(4)}${POCKETEDGE_CALLBACK_PATH}`);
+    } else if (!host.includes("localhost")) {
+      uris.add(`${u.protocol}//www.${host}${POCKETEDGE_CALLBACK_PATH}`);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+/** All allowed OAuth redirect URIs (register + token exchange must match). */
+export function kiteMcpRedirectUris(extra?: string[]): string[] {
+  const uris = new Set<string>();
+  const publicUrl = getConfig().publicUrl;
+  if (publicUrl) uris.add(`${trimUrl(publicUrl)}/api/admin/kite-mcp/oauth/callback`);
+  const pocketedge =
+    process.env.POCKETEDGE_PUBLIC_URL?.trim() ||
+    process.env.POCKETEDGE_SITE_URL?.trim() ||
+    "https://www.pocketedge.in";
+  if (pocketedge) addPocketedgeCallbackOrigin(uris, pocketedge);
+  const more = process.env.KITE_MCP_EXTRA_REDIRECT_URIS?.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  if (more?.length) for (const u of more) uris.add(trimUrl(u));
+  if (extra?.length) {
+    for (const u of extra) {
+      const t = u?.trim();
+      if (t?.startsWith("http")) uris.add(trimUrl(t));
+    }
+  }
+  return [...uris];
+}
+
+export function publicRedirectUri() {
+  const list = kiteMcpRedirectUris();
+  if (!list.length) throw new Error("PUBLIC_URL or POCKETEDGE_PUBLIC_URL is not set.");
+  return list[0];
+}
+
+function pickRedirectUri(preferred: string | undefined, registered: string[]) {
+  if (preferred?.startsWith("http")) {
+    const base = trimUrl(preferred);
+    if (registered.includes(base)) return base;
+    if (base.endsWith(POCKETEDGE_CALLBACK_PATH)) return base;
+  }
+  return registered[0] ?? publicRedirectUri();
 }
 
 function pkcePair() {
@@ -53,20 +109,21 @@ async function writeRow(row: StoredKiteMcpOAuth) {
   if (error) throw error;
 }
 
-async function clientId(): Promise<string> {
+async function clientId(extraRedirect?: string): Promise<string> {
   const env = process.env.KITE_MCP_OAUTH_CLIENT_ID?.trim();
   if (env) return env;
+  const redirectUris = kiteMcpRedirectUris(extraRedirect ? [extraRedirect] : undefined);
+  const redirectKey = redirectUris.slice().sort().join("|");
   const row = await readRow();
-  if (row?.clientId) return row.clientId;
-  const redirectUri = publicRedirectUri();
+  if (row?.clientId && row.registeredRedirectUris === redirectKey) return row.clientId;
   const res = await fetch(`${AUTHORITY}/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify({
       client_name: "Pocketedge Personal Agents",
-      redirect_uris: [redirectUri],
+      redirect_uris: redirectUris,
       token_endpoint_auth_method: "none",
-      grant_types: ["authorization_code"],
+      grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
     }),
     signal: AbortSignal.timeout(15_000),
@@ -78,10 +135,58 @@ async function clientId(): Promise<string> {
   await writeRow({
     kind: "kite_mcp_oauth",
     clientId: body.client_id,
+    registeredRedirectUris: redirectKey,
     ...(row?.accessTokenEnc ? { accessTokenEnc: row.accessTokenEnc, expiresAt: row.expiresAt } : {}),
+    ...(row?.refreshTokenEnc ? { refreshTokenEnc: row.refreshTokenEnc } : {}),
   });
-  console.info("[kite-mcp-oauth] registered client", { redirectUri });
+  console.info("[kite-mcp-oauth] registered client", { redirectUris });
   return body.client_id;
+}
+
+async function refreshKiteMcpAccessToken(): Promise<string | undefined> {
+  const row = await readRow();
+  if (!row?.refreshTokenEnc || !row.clientId) return undefined;
+  let refreshToken: string;
+  try {
+    refreshToken = decryptSecret(row.refreshTokenEnc, PURPOSE, "global");
+  } catch {
+    return undefined;
+  }
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    client_id: row.clientId,
+    refresh_token: refreshToken,
+    resource: MCP_RESOURCE,
+  });
+  const res = await fetch(`${AUTHORITY}/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
+    body,
+    signal: AbortSignal.timeout(20_000),
+  });
+  const json = (await res.json().catch(() => ({}))) as {
+    access_token?: string;
+    refresh_token?: string;
+    expires_in?: number;
+    error?: string;
+  };
+  if (!res.ok || !json.access_token) {
+    console.error("[kite-mcp-oauth] refresh failed", json.error || res.status);
+    return undefined;
+  }
+  const expiresIn = Number(json.expires_in);
+  const expiresAt = Date.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn * 1000 : 23 * 3600_000);
+  await writeRow({
+    kind: "kite_mcp_oauth",
+    clientId: row.clientId,
+    accessTokenEnc: encryptSecret(json.access_token, PURPOSE, "global"),
+    refreshTokenEnc: json.refresh_token
+      ? encryptSecret(json.refresh_token, PURPOSE, "global")
+      : row.refreshTokenEnc,
+    expiresAt,
+  });
+  console.info("[kite-mcp-oauth] refreshed access token", { expiresAt: new Date(expiresAt).toISOString() });
+  return json.access_token;
 }
 
 /** Bearer for every JSON-RPC call to hosted mcp.kite.trade (required since Nov 2025). */
@@ -97,6 +202,9 @@ export async function kiteMcpBearer(): Promise<string | undefined> {
       console.error("[kite-mcp-oauth] decrypt failed", error);
     }
   }
+  if (row?.refreshTokenEnc) {
+    return refreshKiteMcpAccessToken();
+  }
   return undefined;
 }
 
@@ -104,9 +212,11 @@ export function kiteMcpOAuthConfigured() {
   return Boolean(process.env.KITE_MCP_BEARER?.trim()) || supabaseStoreConfigured();
 }
 
-export async function beginKiteMcpOAuth(): Promise<{ url: string }> {
-  const id = await clientId();
-  const redirectUri = publicRedirectUri();
+export async function beginKiteMcpOAuth(opts?: { redirectUri?: string }): Promise<{ url: string }> {
+  const preferred = opts?.redirectUri?.trim();
+  const id = await clientId(preferred);
+  const registered = kiteMcpRedirectUris(preferred ? [preferred] : undefined);
+  const redirectUri = pickRedirectUri(preferred, registered);
   const { codeVerifier, codeChallenge } = pkcePair();
   const state = crypto.randomBytes(16).toString("base64url");
   const params = new URLSearchParams({
@@ -124,7 +234,7 @@ export async function beginKiteMcpOAuth(): Promise<{ url: string }> {
     ...row,
     kind: "kite_mcp_oauth",
     clientId: id,
-    pending: { state, codeVerifier, at: Date.now() },
+    pending: { state, codeVerifier, at: Date.now(), redirectUri },
   });
   return { url: `${AUTHORITY}/authorize?${params.toString()}` };
 }
@@ -139,7 +249,7 @@ export async function completeKiteMcpOAuth(input: { code: string; state: string 
     throw new Error("OAuth session expired — start login again.");
   }
   const id = row?.clientId || (await clientId());
-  const redirectUri = publicRedirectUri();
+  const redirectUri = pending.redirectUri || publicRedirectUri();
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     client_id: id,
@@ -156,6 +266,7 @@ export async function completeKiteMcpOAuth(input: { code: string; state: string 
   });
   const json = (await res.json().catch(() => ({}))) as {
     access_token?: string;
+    refresh_token?: string;
     expires_in?: number;
     error?: string;
     error_description?: string;
@@ -167,25 +278,51 @@ export async function completeKiteMcpOAuth(input: { code: string; state: string 
   const expiresIn = Number(json.expires_in);
   const expiresAt = Date.now() + (Number.isFinite(expiresIn) && expiresIn > 0 ? expiresIn * 1000 : 23 * 3600_000);
   await writeRow({
+    ...row,
     kind: "kite_mcp_oauth",
     clientId: id,
     accessTokenEnc: encryptSecret(json.access_token, PURPOSE, "global"),
+    refreshTokenEnc: json.refresh_token
+      ? encryptSecret(json.refresh_token, PURPOSE, "global")
+      : row?.refreshTokenEnc,
     expiresAt,
+    pending: undefined,
   });
-  console.info("[kite-mcp-oauth] access token stored", { expiresAt: new Date(expiresAt).toISOString() });
+  console.info("[kite-mcp-oauth] access token stored", {
+    expiresAt: new Date(expiresAt).toISOString(),
+    hasRefresh: Boolean(json.refresh_token),
+  });
+}
+
+/** Proactive refresh before access token expires (cron). */
+export async function ensureKiteMcpBearerFresh(): Promise<boolean> {
+  if (process.env.KITE_MCP_BEARER?.trim()) return true;
+  const row = await readRow();
+  if (!row) return false;
+  const stillValid = row.expiresAt && row.expiresAt > Date.now() + 4 * 3600_000;
+  if (stillValid && row.accessTokenEnc) {
+    try {
+      decryptSecret(row.accessTokenEnc, PURPOSE, "global");
+      return true;
+    } catch {
+      // refresh below
+    }
+  }
+  if (row.refreshTokenEnc) {
+    return Boolean(await refreshKiteMcpAccessToken());
+  }
+  return Boolean(await kiteMcpBearer());
 }
 
 export async function kiteMcpAuthErrorMessage() {
   if (await kiteMcpBearer()) return undefined;
   try {
-    publicRedirectUri();
+    kiteMcpRedirectUris();
   } catch {
-    return "Zerodha MCP OAuth is not configured (missing PUBLIC_URL).";
+    return "Zerodha MCP OAuth is not configured (missing PUBLIC_URL / POCKETEDGE_PUBLIC_URL).";
   }
-  const base = getConfig().publicUrl.replace(/\/$/, "");
   return (
-    "Zerodha’s hosted MCP needs a one-time server authorization (~24h). " +
-    "On pocketedge.in → Connections, use “Authorize Zerodha server” (operator PocketEdge login). " +
-    (base ? `Callback host: ${base.replace(/^https?:\/\//, "")}.` : "")
+    "Zerodha’s hosted MCP needs a one-time server sign-in (~1 minute). " +
+    'On Connections, tap “Authorize Zerodha server”, finish Kite’s page, then Connect Zerodha.'
   );
 }

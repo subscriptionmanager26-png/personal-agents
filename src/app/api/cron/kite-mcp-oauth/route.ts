@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getConfig } from "@/lib/config";
-import { kiteMcpBearer, kiteMcpAuthErrorMessage } from "@/lib/kite-mcp-oauth";
+import { ensureKiteMcpBearerFresh, kiteMcpAuthErrorMessage } from "@/lib/kite-mcp-oauth";
 
 export const dynamic = "force-dynamic";
 
@@ -12,8 +12,8 @@ export async function GET(request: Request) {
   if (!secret || (request.headers.get("authorization") !== `Bearer ${secret}` && url.searchParams.get("secret") !== secret)) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
-  const bearer = await kiteMcpBearer();
-  if (bearer) {
+  const ready = await ensureKiteMcpBearerFresh();
+  if (ready) {
     return NextResponse.json({ ok: true, ready: true });
   }
   const message = await kiteMcpAuthErrorMessage();

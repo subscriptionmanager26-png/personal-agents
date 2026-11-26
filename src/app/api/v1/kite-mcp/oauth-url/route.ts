@@ -12,7 +12,9 @@ export async function GET(request: Request) {
     return Response.json({ ready: true });
   }
   try {
-    const { url } = await beginKiteMcpOAuth();
+    const urlObj = new URL(request.url);
+    const redirectUri = urlObj.searchParams.get("redirect_uri")?.trim() || undefined;
+    const { url } = await beginKiteMcpOAuth({ redirectUri });
     return Response.json({ ready: false, url });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Could not start Kite MCP OAuth.";
