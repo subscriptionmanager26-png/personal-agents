@@ -182,9 +182,10 @@ export async function kiteMcpAuthErrorMessage() {
   } catch {
     return "Zerodha MCP OAuth is not configured (missing PUBLIC_URL).";
   }
+  const base = getConfig().publicUrl.replace(/\/$/, "");
+  const start = base ? `${base}/api/admin/kite-mcp/oauth/start` : "/api/admin/kite-mcp/oauth/start";
   return (
-    "Zerodha’s hosted MCP now requires a one-time operator OAuth setup. " +
-    "Sign in on studio.pocketedge.in and open /api/admin/kite-mcp/oauth/start " +
-    "(or set KITE_MCP_BEARER on the agent backend)."
+    "Zerodha’s hosted MCP needs a one-time operator OAuth token (~24h). " +
+    `Open ${start} while signed in as an operator (or set KITE_MCP_BEARER on personal-agents).`
   );
 }

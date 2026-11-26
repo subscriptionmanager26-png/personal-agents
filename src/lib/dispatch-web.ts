@@ -1,7 +1,7 @@
 import { after } from "next/server";
 
 import { dispatchJob } from "@/lib/cursor";
-import { createJob, findJobByClientSendId, patchJob } from "@/lib/jobs";
+import { createJob, findJobByClientSendId, getJob, patchJob } from "@/lib/jobs";
 import { releaseThreadForNewMessageDeferred, releaseThreadForNewMessageFast } from "@/lib/settle";
 import { resolveAttachments } from "@/lib/files";
 import { ensurePersonalRepo } from "@/lib/github";
@@ -133,6 +133,34 @@ export async function enqueueChat(input: {
   scheduleDispatch(user, job);
 
   return { job, user, reused: false as const };
+}
+
+/** Client-callable nudge — run dispatch in this request instead of waiting on after() / cron. */
+export async function kickJobDispatch(
+  user: PersonalUser,
+  jobId: string,
+): Promise<{ kicked: boolean; reason: string }> {
+  const job = await getJob(jobId, { fresh: true });
+  if (!job || job.ownerUserId !== user.id) return { kicked: false, reason: "not_found" };
+  if (job.cursorRunId || job.status === "replied" || job.status === "error") {
+    return { kicked: false, reason: "already_started" };
+  }
+  if (job.status !== "queued") {
+    return { kicked: false, reason: job.status };
+  }
+  try {
+    await Promise.race([
+      dispatchJob(user, job),
+      new Promise<void>((resolve) => setTimeout(resolve, 4_000)),
+    ]);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error("[kickJobDispatch] failed", { jobId, detail });
+    return { kicked: false, reason: "dispatch_error" };
+  }
+  const row = (await getJob(jobId, { fresh: true })) ?? job;
+  if (row.cursorRunId) return { kicked: true, reason: "run_started" };
+  return { kicked: true, reason: "dispatch_started" };
 }
 
 export async function enqueueWebChat(input: {

@@ -257,7 +257,11 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
     return { user: latest, agentId: binding.agentId, mock: false };
   }
 
-  const workspace = await getWorkspace(latest.workspaceId);
+  const specialist = specialistForThread(job.webThreadId);
+  const [workspace, earlyBinding] = await Promise.all([
+    getWorkspace(latest.workspaceId),
+    agentBindingForJob(job, latest),
+  ]);
   const rt = runtimeFor(workspace);
 
   if (!rt.cursorApiKey) {
@@ -283,7 +287,6 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
 
   // Pocketedge API clients (externalId) share the company workspace — no per-user GitHub repo.
   // Specialist threads (MF) still get their own shared repo on the same createAgent call.
-  const specialist = specialistForThread(job.webThreadId);
   const withRepo = !specialist && Boolean(rt.githubToken) && !latest.externalId;
   let current = latest;
   let skillsInRepo = false;
@@ -313,7 +316,7 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   });
 
   // Prefer the standing thread agent. skillsHash mismatch no longer forces a new agent.
-  let binding = await agentBindingForJob(job, current);
+  let binding = earlyBinding.agentId ? earlyBinding : await agentBindingForJob(job, current);
   if (binding.agentId) {
     // Enqueue already superseded in-flight jobs (fast path). Full Cursor reconcile
     // here added 10–30s before createRun on busy threads and blocked showing replies.
