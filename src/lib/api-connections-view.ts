@@ -40,10 +40,7 @@ export async function apiConnectionsView(ownerUserId: string): Promise<ApiConnec
       loggedInAs,
       sessionActive: Boolean(loggedInAs),
       mcpBackendReady: Boolean(mcpBearer),
-      mcpBackendMessage: mcpBearer
-        ? null
-        : mcpBackendMessage ??
-          "Zerodha MCP backend is not configured. An operator must authorize the server once (~24h).",
+      mcpBackendMessage: mcpBearer ? null : mcpBackendMessage ?? "Authorize the Kite server once (button below), then Connect Zerodha.",
       mcpBackendPublicUrl: getConfig().publicUrl || null,
     },
     mcp,
