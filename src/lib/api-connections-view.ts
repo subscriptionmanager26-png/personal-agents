@@ -1,3 +1,4 @@
+import { getConfig } from "@/lib/config";
 import { listConnections } from "@/lib/connections";
 import { getKiteConnection, kiteLoggedInAs } from "@/lib/kite";
 import { kiteMcpAuthErrorMessage, kiteMcpBearer } from "@/lib/kite-mcp-oauth";
@@ -11,6 +12,8 @@ export type ApiConnectionsView = {
     /** Hosted mcp.kite.trade operator token (backend); without this Connect/Login always fails. */
     mcpBackendReady: boolean;
     mcpBackendMessage: string | null;
+    /** Where the operator OAuth callback is registered. */
+    mcpBackendPublicUrl: string | null;
   };
   mcp: Awaited<ReturnType<typeof listConnections>>;
   vaultCount: number;
@@ -37,7 +40,11 @@ export async function apiConnectionsView(ownerUserId: string): Promise<ApiConnec
       loggedInAs,
       sessionActive: Boolean(loggedInAs),
       mcpBackendReady: Boolean(mcpBearer),
-      mcpBackendMessage: mcpBearer ? null : mcpBackendMessage ?? "Zerodha MCP backend is not configured.",
+      mcpBackendMessage: mcpBearer
+        ? null
+        : mcpBackendMessage ??
+          "Zerodha MCP backend is not configured. An operator must authorize the server once (~24h).",
+      mcpBackendPublicUrl: getConfig().publicUrl || null,
     },
     mcp,
     vaultCount: vault.length,

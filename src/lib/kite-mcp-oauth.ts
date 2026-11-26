@@ -183,9 +183,9 @@ export async function kiteMcpAuthErrorMessage() {
     return "Zerodha MCP OAuth is not configured (missing PUBLIC_URL).";
   }
   const base = getConfig().publicUrl.replace(/\/$/, "");
-  const start = base ? `${base}/api/admin/kite-mcp/oauth/start` : "/api/admin/kite-mcp/oauth/start";
   return (
-    "Zerodha’s hosted MCP needs a one-time operator OAuth token (~24h). " +
-    `Open ${start} while signed in as an operator (or set KITE_MCP_BEARER on personal-agents).`
+    "Zerodha’s hosted MCP needs a one-time server authorization (~24h). " +
+    "On pocketedge.in → Connections, use “Authorize Zerodha server” (operator PocketEdge login). " +
+    (base ? `Callback host: ${base.replace(/^https?:\/\//, "")}.` : "")
   );
 }
