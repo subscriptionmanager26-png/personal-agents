@@ -322,7 +322,7 @@ export async function kiteMcpAuthErrorMessage() {
     return "Zerodha MCP OAuth is not configured (missing PUBLIC_URL / POCKETEDGE_PUBLIC_URL).";
   }
   return (
-    "Zerodha’s hosted MCP needs a one-time server sign-in (~1 minute). " +
-    'On Connections, tap “Authorize Zerodha server”, finish Kite’s page, then Connect Zerodha.'
+    "Before Connect Zerodha works, authorize PocketEdge’s Kite server once (~1 minute). " +
+    'Tap “Authorize Zerodha server” below, complete login on Kite’s page, then come back here.'
   );
 }
