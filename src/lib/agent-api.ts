@@ -259,12 +259,12 @@ const SSE_HEADERS = {
   "X-Accel-Buffering": "no",
 };
 
-const POLL_MS = 200;
+const POLL_MS = 120;
 const HEARTBEAT_MS = 15_000;
 /** Close before the platform's function limit; clients resume with Last-Event-ID. */
 const MAX_STREAM_MS = 270_000;
 /** Cursor run status + partial text while a client is on the SSE wire. */
-const RUN_CHECK_MS = 1_000;
+const RUN_CHECK_MS = 500;
 
 function encode(event: StreamEvent) {
   const { seq, ...rest } = event;

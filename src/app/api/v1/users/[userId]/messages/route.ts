@@ -1,5 +1,6 @@
 import { isValidThreadId, listMessages, messageView } from "@/lib/agent-api";
-import { apiError, readJson, requireApiUser, requireApiUserLight } from "@/lib/api-auth";
+import { apiError, readJson, requireApiUserLight } from "@/lib/api-auth";
+import { getUser } from "@/lib/users";
 import { isStoreReadError } from "@/lib/store-errors";
 import { ChatRejected, enqueueChat } from "@/lib/dispatch-web";
 
@@ -61,9 +62,12 @@ export async function GET(request: Request, { params }: Params) {
 
 /** Send a message; the reply arrives on the message's event stream. */
 export async function POST(request: Request, { params }: Params) {
+  const t0 = Date.now();
   const { userId } = await params;
-  const auth = await requireApiUser(request, userId);
+  const auth = await requireApiUserLight(request, userId);
   if ("response" in auth) return auth.response;
+  const user = await getUser(auth.ownerUserId);
+  if (!user) return apiError(404, "user_not_found", "Create the user with PUT /api/v1/users/{userId} first.");
   const body = await readJson(request);
   const text = typeof body?.text === "string" ? body.text : "";
   const threadId = typeof body?.threadId === "string" ? body.threadId.trim() : "";
@@ -85,7 +89,7 @@ export async function POST(request: Request, { params }: Params) {
 
   try {
     const { job, reused } = await enqueueChat({
-      user: auth.user,
+      user,
       text,
       threadId,
       source: "api",
@@ -95,7 +99,12 @@ export async function POST(request: Request, { params }: Params) {
     const base = `/api/v1/users/${encodeURIComponent(auth.externalId)}/messages/${job.id}`;
     return Response.json(
       { message: messageView(job), links: { self: base, events: `${base}/events` }, reused: Boolean(reused) },
-      { status: 202 },
+      {
+        status: 202,
+        headers: {
+          "Server-Timing": `enqueue;dur=${Date.now() - t0}`,
+        },
+      },
     );
   } catch (error) {
     if (error instanceof ChatRejected) {

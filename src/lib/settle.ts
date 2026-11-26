@@ -155,7 +155,7 @@ export async function maybeStreamPartialReply(job: Job): Promise<void> {
   if (!job.cursorRunId) return;
   if (job.status !== "dispatched" && job.status !== "delivering") return;
   const last = partialReplyLastPoll.get(job.id) ?? 0;
-  if (Date.now() - last < 900) return;
+  if (Date.now() - last < 550) return;
   partialReplyLastPoll.set(job.id, Date.now());
   try {
     const raw = await fetchAssistantTextForRun(job.ownerUserId, job.cursorAgentId, job.cursorRunId);

@@ -20,18 +20,18 @@ export class ChatRejected extends Error {
   }
 }
 
-async function scheduleDispatch(user: PersonalUser, job: Job) {
-  if (tablesStoreEnabled()) {
-    try {
-      await tablesEnqueueDispatch(job.id, user.id);
-    } catch (error) {
-      console.error("[enqueueChat] queue insert failed; falling back to after()", job.id, error);
-    }
-  }
-
+/** Never await — keeps POST 202 at enqueue time, not dispatch time. */
+function scheduleDispatch(user: PersonalUser, job: Job) {
   // Best-effort nudge — durable queue cron is primary when TABLES=1.
   // claimJobDispatch prevents duplicate createAgent if both race.
   after(async () => {
+    if (tablesStoreEnabled()) {
+      try {
+        await tablesEnqueueDispatch(job.id, user.id);
+      } catch (error) {
+        console.error("[enqueueChat] queue insert failed", job.id, error);
+      }
+    }
     try {
       await dispatchJob(user, job);
       if (tablesStoreEnabled()) {
@@ -90,7 +90,7 @@ export async function enqueueChat(input: {
     });
     if (existing) {
       if (!existing.cursorRunId && existing.status === "queued") {
-        await scheduleDispatch(input.user, existing);
+        scheduleDispatch(input.user, existing);
       }
       return { job: existing, user: input.user, reused: true as const };
     }
@@ -130,7 +130,7 @@ export async function enqueueChat(input: {
     });
   });
 
-  await scheduleDispatch(user, job);
+  scheduleDispatch(user, job);
 
   return { job, user, reused: false as const };
 }
