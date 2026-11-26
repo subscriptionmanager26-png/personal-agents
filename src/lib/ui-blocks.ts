@@ -28,7 +28,7 @@ export function tableBlock(args: Record<string, unknown>): Result {
     .map((c) => ({
       key: str(c.key, 40),
       label: str(c.label, 60) || str(c.key, 40),
-      format: (["text", "number", "currency", "percent"] as const).find((f) => f === c.format),
+      format: (["text", "number", "currency", "percent", "percent_pts"] as const).find((f) => f === c.format),
     }))
     .filter((c) => KEY.test(c.key));
   if (!parsed.length) return { error: "columns must be a list of { key, label, format? }" };

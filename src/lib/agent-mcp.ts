@@ -100,8 +100,9 @@ const UI_TOOLS: McpTool[] = [
               label: { type: "string" },
               format: {
                 type: "string",
-                enum: ["text", "number", "currency", "percent"],
-                description: "percent: cell values are fractions (0.125 = 12.5%).",
+                enum: ["text", "number", "currency", "percent", "percent_pts"],
+                description:
+                  "percent: fractions (0.125 = 12.5%). percent_pts: already in % points (9.22 = 9.22%), e.g. MF screener CAGR.",
               },
             },
           },

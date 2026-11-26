@@ -213,9 +213,14 @@ export async function listMessages(ownerUserId: string, opts: { threadId?: strin
   return out;
 }
 
-export async function getOwnedMessage(ownerUserId: string, messageId: string) {
+export async function getOwnedMessage(
+  ownerUserId: string,
+  messageId: string,
+  opts?: { deep?: boolean },
+) {
   const job = await getJob(messageId, { fresh: true });
   if (!job || job.ownerUserId !== ownerUserId) return undefined;
+  if (opts?.deep === false) return job;
   const { reconcileJob, reconcileErroredJob, ensureFullReply } = await import("@/lib/settle");
   let row = await reconcileJob(job);
   if (row.status === "error") {
@@ -254,11 +259,12 @@ const SSE_HEADERS = {
   "X-Accel-Buffering": "no",
 };
 
-const POLL_MS = 700;
+const POLL_MS = 200;
 const HEARTBEAT_MS = 15_000;
 /** Close before the platform's function limit; clients resume with Last-Event-ID. */
 const MAX_STREAM_MS = 270_000;
-const RUN_CHECK_MS = 5_000;
+/** Cursor run status + partial text while a client is on the SSE wire. */
+const RUN_CHECK_MS = 1_000;
 
 function encode(event: StreamEvent) {
   const { seq, ...rest } = event;
@@ -319,7 +325,8 @@ export function messageEventStream(request: Request, ownerUserId: string, messag
           // Nothing else watches API runs, so check Cursor while the caller is listening.
           if (Date.now() - lastRunCheck > RUN_CHECK_MS) {
             lastRunCheck = Date.now();
-            const { settleIfFinished } = await import("@/lib/settle");
+            const { settleIfFinished, maybeStreamPartialReply } = await import("@/lib/settle");
+            await maybeStreamPartialReply(job).catch(() => undefined);
             await settleIfFinished(job).catch(() => undefined);
           }
           if (Date.now() - lastWrite > HEARTBEAT_MS) write(": heartbeat\n\n");

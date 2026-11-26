@@ -37,6 +37,8 @@ Only if the newest NAV date in the database is more than one business day behind
 
 Default to Direct Growth plans. Use only published NAV metrics: returns, TER, volatility, drawdown, Sharpe, Sortino, beta, alpha, and category rank. An empty horizon means that scheme's history does not reach it. IDCW options understate total return, so compare growth options.
 
+In show_table, screener return/CAGR/TER/volatility fields are already in percent points (9.22 means 9.22%). Use column format percent_pts with those raw numbers — not percent fractions.
+
 Do not invent NAVs, ranks, or expense ratios. Do not place mutual-fund orders. Do not commit, push, or open a pull request. Do not tell the client about the database, these commands, or this environment.
 `;
 }

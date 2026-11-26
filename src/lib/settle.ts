@@ -147,6 +147,31 @@ export async function settleByAgentId(agentId: string) {
   }
 }
 
+const partialReplyLastPoll = new Map<string, number>();
+
+/** Push growing assistant text onto the job stream while a client is listening (SSE). */
+export async function maybeStreamPartialReply(job: Job): Promise<void> {
+  if (!job.cursorAgentId || job.cursorAgentId.startsWith("mock-")) return;
+  if (!job.cursorRunId) return;
+  if (job.status !== "dispatched" && job.status !== "delivering") return;
+  const last = partialReplyLastPoll.get(job.id) ?? 0;
+  if (Date.now() - last < 900) return;
+  partialReplyLastPoll.set(job.id, Date.now());
+  try {
+    const raw = await fetchAssistantTextForRun(job.ownerUserId, job.cursorAgentId, job.cursorRunId);
+    const text = raw?.trim() ?? "";
+    if (!text || text.startsWith("Agent status:")) return;
+    const current = replyTextFromStream(job);
+    if (text.length <= current.length + 8) return;
+    const { appendStreamEvents } = await import("@/lib/jobs");
+    await appendStreamEvents(job.id, job.ownerUserId, [
+      { type: "block", block: { kind: "markdown", text: clientText(text) } },
+    ]);
+  } catch {
+    // Best-effort live preview; never block settlement.
+  }
+}
+
 /** Settles one dispatched job if its Cursor run has ended. */
 export async function settleIfFinished(job: Job) {
   if (!job.cursorAgentId || job.cursorAgentId.startsWith("mock-")) return;

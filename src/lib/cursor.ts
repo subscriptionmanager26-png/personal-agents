@@ -315,8 +315,8 @@ export async function dispatchJob(user: PersonalUser, job: Job) {
   // Prefer the standing thread agent. skillsHash mismatch no longer forces a new agent.
   let binding = await agentBindingForJob(job, current);
   if (binding.agentId) {
-    const { reconcileActiveJobsInThread } = await import("@/lib/settle");
-    await reconcileActiveJobsInThread(current.id, job.source ?? "web", job.webThreadId ?? "main");
+    // Enqueue already superseded in-flight jobs (fast path). Full Cursor reconcile
+    // here added 10–30s before createRun on busy threads and blocked showing replies.
 
     const onExisting = await dispatchOnExistingAgent(
       job,
